@@ -30,6 +30,19 @@ editor.roetechnologyservices.com          roetechnologyservices.com
 - **Versioned contract.** `theme-api.js` exports `EDITOR_API`. If the site ever changes that
   contract, the editor shows a clear message instead of corrupting content. CI re-tests the
   editor against the live site's code every week.
+- **Optional features follow the site.** Newer site options (unpublished pages, "Hide from
+  search engines", redirects) appear in the editor only when the site's `theme-api.js` lists them
+  in `FEATURES`, so the editor keeps working with an older site.
+
+### Page options
+
+- **Show on website** (Pages tab) takes a page off the site, or keeps a new one off until it is
+  ready, while you keep editing it. Hidden from visitors, but not secret: the site's repository
+  is public.
+- **Hide from search engines** keeps a page on the site but asks Google and others not to list it.
+- **Renamed pages keep working.** When you change the address of a page or post that is already
+  live, the old address forwards to the new one. Redirects are listed in Settings → Redirects,
+  where you can also add or remove them by hand.
 
 ## One-time setup
 

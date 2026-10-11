@@ -30,8 +30,11 @@ if (fonts) document.getElementById('theme-fonts').setAttribute('href', fonts);
 
 // Absolute URL: the <base> above points at the site, but history must stay on the editor's origin.
 const editorUrl = (path) => `${location.origin}${location.pathname}?path=${encodeURIComponent(path)}`;
-function show(path, push = false) {
-  const route = findRoute(doc, path);
+function show(path, push = false, hops = 0) {
+  // Unpublished pages and posts can be previewed too; redirects are followed like the live site would.
+  const route = findRoute(doc, path, { drafts: true });
+  if (route?.type === 'redirect' && route.to.startsWith('/') && hops < 5) { show(route.to, push, hops + 1); return; }
+  if (route?.type === 'redirect') { location.href = route.to; return; }
   if (route?.type === 'post') {
     app.innerHTML = renderPostPage(doc, route.post);
     document.title = `Preview: ${postTitle(route.post)}`;

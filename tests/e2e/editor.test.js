@@ -9,7 +9,7 @@ import { readFile, stat, cp, mkdtemp, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SITE_DIR = resolve(process.env.SITE_DIR || join(ROOT, 'site'));
@@ -51,16 +51,8 @@ before(async () => {
 });
 after(async () => { await browser?.close(); site?.close(); editor?.close(); if (tmp) await rm(tmp, { recursive: true, force: true }); });
 
-async function newPage(ctx) {
-  const p = await ctx.newPage();
-  p.errors = [];
-  p.on('pageerror', (e) => p.errors.push(e.message));
-  p.on('console', (m) => m.type() === 'error' && !isNoise(m.text()) && p.errors.push(m.text()));
-  return p;
-}
-
-test('editor loads the theme and content from the site and publishes a full build', async () => {
-  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+// Fake GitHub API: records the committed tree and lets tests read committed files.
+async function mockGitHub(ctx) {
   const tree = []; const blobs = [];
   await ctx.route('https://api.github.com/**', async (r) => {
     const path = new URL(r.request().url()).pathname.replace(/^\/repos\/[^/]+\/[^/]+/, '');
@@ -74,6 +66,28 @@ test('editor loads the theme and content from the site and publishes a full buil
     if (path === '/git/refs/heads/main') return json({});
     return json({ message: 'Not Found' }, 404);
   });
+  const read = (path) => Buffer.from(blobs[Number(tree.find((t) => t.path === path).sha.slice(1))].content, 'base64').toString();
+  return { tree, read };
+}
+
+async function publish(p) {
+  await p.click('#publish');
+  await p.fill('.ed-modal input[type=password]', 'github_pat_TEST');
+  await p.click('button:has-text("Publish now")');
+  await p.locator('.log .ok', { hasText: 'Done' }).waitFor();
+}
+
+async function newPage(ctx) {
+  const p = await ctx.newPage();
+  p.errors = [];
+  p.on('pageerror', (e) => p.errors.push(e.message));
+  p.on('console', (m) => m.type() === 'error' && !isNoise(m.text()) && p.errors.push(m.text()));
+  return p;
+}
+
+test('editor loads the theme and content from the site and publishes a full build', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { tree, read } = await mockGitHub(ctx);
   const p = await newPage(ctx);
   p.on('dialog', (d) => d.accept());
   await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
@@ -115,18 +129,66 @@ test('editor loads the theme and content from the site and publishes a full buil
   assert.ok(preview.url().startsWith(editorUrl) && /path=%2Fservices%2F/.test(preview.url()), preview.url());
 
   // Publish builds every page with the site's builder
-  await p.click('#publish');
-  await p.fill('.ed-modal input[type=password]', 'github_pat_TEST');
-  await p.click('button:has-text("Publish now")');
-  await p.locator('.log .ok', { hasText: 'Done' }).waitFor();
+  await publish(p);
   const paths = tree.map((t) => t.path);
   for (const f of ['content/site.json', 'index.html', 'services/index.html', 'blog/index.html', 'sitemap.xml', 'feed.xml', 'generated.json']) assert.ok(paths.includes(f), f);
   assert.ok(paths.some((f) => /^assets\/uploads\/[0-9a-f]+\.(webp|png)$/.test(f)), 'uploaded image committed');
   assert.deepEqual(tree.filter((t) => t.sha === null).map((t) => t.path), ['old-page/index.html']);
-  const read = (path) => Buffer.from(blobs[Number(tree.find((t) => t.path === path).sha.slice(1))].content, 'base64').toString();
   assert.match(read('index.html'), /Edited from the standalone editor/);
   assert.match(read('index.html'), /<link rel="canonical" href="https:\/\/roetechnologyservices\.com\/">/, 'canonical uses the site address, not the editor');
   assert.doesNotMatch(read('content/site.json'), /data:image/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('page options: unpublish, hide from search engines, renamed pages keep their old address', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('redirects')) { t.skip('the site does not support page options yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { tree, read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (d) => d.accept());
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  const pageIndex = (title) => p.locator('#page-select option').evaluateAll((os, t) => os.findIndex((o) => o.textContent === t), title);
+  const goTo = async (title) => { await p.selectOption('#page-select', String(await pageIndex(title))); await p.click('.ed-rail button[data-tab="pages"]'); };
+  const toggle = (label) => p.locator(`.page-item.is-current label.switch:has-text("${label}") input`);
+
+  // Rename a live page: the old address is kept as a redirect
+  await goTo('Services');
+  await p.fill('.page-slug', 'what-we-do');
+  await p.press('.page-slug', 'Tab');
+  await p.locator('.toast', { hasText: 'Visitors to /services/ will be sent to /what-we-do/' }).waitFor();
+
+  // Unpublish a page, hide another from search engines
+  await goTo('About');
+  await toggle('Show on website').uncheck();
+  assert.match(await p.locator('#page-select option:checked').innerText(), /unpublished/);
+  await goTo('Contact');
+  await toggle('Hide from search engines').check();
+
+  // The redirect is listed in Settings
+  await p.click('.ed-rail button[data-tab="site"]');
+  assert.match(await p.locator('.redirect-row').first().innerText(), /\/services\/\s*→\s*\/what-we-do\//);
+
+  // Unpublished pages can still be previewed
+  await p.selectOption('#page-select', String(await pageIndex('About (unpublished)')));
+  const [preview] = await Promise.all([ctx.waitForEvent('page'), p.click('#preview')]);
+  await preview.waitForFunction(() => document.title === 'Preview: About');
+  await preview.close();
+
+  await publish(p);
+  const paths = tree.map((x) => x.path);
+  assert.ok(paths.includes('what-we-do/index.html'));
+  assert.match(read('services/index.html'), /<meta http-equiv="refresh" content="0; url=\/what-we-do\/">/);
+  assert.ok(!paths.includes('about/index.html'), 'unpublished page is not built');
+  assert.match(read('contact/index.html'), /<meta name="robots" content="noindex">/);
+  const sitemap = read('sitemap.xml');
+  assert.match(sitemap, /\/what-we-do\//);
+  assert.doesNotMatch(sitemap, /\/(about|contact|services)\//);
+  const content = JSON.parse(read('content/site.json'));
+  assert.deepEqual(content.redirects, [{ from: '/services/', to: '/what-we-do/' }]);
+  assert.equal(content.pages.find((x) => x.title === 'About').draft, true);
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });
