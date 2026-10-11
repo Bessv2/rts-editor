@@ -99,10 +99,18 @@ test('editor loads the theme and content from the site and publishes a full buil
   await chooser.setFiles({ name: 'photo.png', mimeType: 'image/png', buffer: PNG });
   await p.locator('.ed-panel .media-grid').first().locator('.media-tile').first().waitFor();
 
+  // Switch the color theme; the preview must show the draft's theme, not the site's defaults
+  await p.click('.ed-rail button[data-tab="theme"]');
+  await p.click('.preset:has-text("Emerald")');
+
   // Preview stays on the editor origin and shows the draft
   const [preview] = await Promise.all([ctx.waitForEvent('page'), p.click('#preview')]);
   await preview.locator('.hero__title').first().waitFor();
   assert.match(await preview.locator('.hero__title').first().innerText(), /Edited from the standalone editor/);
+  const vars = await preview.evaluate(() => { const cs = getComputedStyle(document.documentElement); return [cs.getPropertyValue('--c-primary').trim(), cs.getPropertyValue('--font-head')]; });
+  assert.equal(vars[0], '#059669', 'preview uses the draft color theme');
+  const headingFont = JSON.parse(await readFile(join(SITE_DIR, 'content/site.json'), 'utf8')).theme.headingFont;
+  assert.ok(vars[1].includes(headingFont), `preview uses the draft heading font (${vars[1]})`);
   await preview.click('.nav__list a:has-text("Services")');
   assert.ok(preview.url().startsWith(editorUrl) && /path=%2Fservices%2F/.test(preview.url()), preview.url());
 

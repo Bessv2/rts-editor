@@ -7,14 +7,11 @@ let theme;
 try { theme = await loadTheme(); } catch (err) { showFatal(err.message); throw err; }
 const { migrate, findRoute, renderPage, renderPostPage, renderNotFound, postTitle, themeCSS, fontsHref, enhance } = theme;
 
-// Site-relative images and links resolve against the live site.
+// Site-relative images and links resolve against the live site. (The site's
+// stylesheet is linked in preview.html, before the theme variables set below.)
 const base = document.createElement('base');
 base.href = `${SITE}/`;
 document.head.prepend(base);
-const css = document.createElement('link');
-css.rel = 'stylesheet';
-css.href = `${SITE}/assets/css/site.css`;
-document.head.append(css);
 
 async function loadDraft() {
   try {
