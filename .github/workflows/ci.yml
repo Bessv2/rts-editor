@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # Re-test weekly against the live site's theme, so a site change that breaks
+  # the editor is noticed even if the editor itself didn't change.
+  schedule:
+    - cron: '41 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests & config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Configuration in sync with editor.config.json
+        run: npm run check
+      - name: Unit tests
+        run: npm test
+
+  e2e:
+    name: Browser tests (against the site's theme)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the site this editor edits
+        uses: actions/checkout@v4
+        with:
+          repository: Bessv2/RTS
+          path: site
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright (test-only, not part of the editor)
+        run: |
+          npm install --no-save --no-package-lock playwright@1
+          npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run test:e2e
+        env:
+          SITE_DIR: site

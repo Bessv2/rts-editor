@@ -1,0 +1,31 @@
+/* Styles injected into the editor canvas only (selection outlines, toolbars). */
+html { scroll-behavior: auto; }
+.edit-mode [data-section-id] { position: relative; cursor: default; }
+.edit-mode .site-header[data-section-id] { position: sticky; }
+.edit-mode [data-section-id]:hover { outline: 2px solid rgba(37, 99, 235, .35); outline-offset: -2px; }
+.edit-mode [data-section-id].is-selected { outline: 2px solid #2563eb; outline-offset: -2px; }
+.edit-mode [data-edit] { cursor: text; border-radius: 3px; transition: outline-color .12s; outline: 1px dashed transparent; outline-offset: 3px; min-width: 1ch; }
+.edit-mode [data-edit]:hover { outline-color: rgba(37, 99, 235, .55); }
+.edit-mode [data-edit]:focus { outline: 2px solid #2563eb; outline-offset: 3px; caret-color: #2563eb; }
+.edit-mode [data-section-id]:not(.is-selected) [data-edit]:empty:not(:focus) { display: none; }
+.edit-mode [data-edit]:empty::before { content: attr(data-ph); opacity: .45; pointer-events: none; }
+.edit-mode .hero__title[data-edit]:focus { -webkit-text-fill-color: currentColor; color: #fff; background: none; }
+.edit-mode .sec--light .hero__title[data-edit]:focus, .edit-mode .sec--alt .hero__title[data-edit]:focus { color: var(--c-text); }
+.edit-mode .contact__form input, .edit-mode .contact__form textarea { pointer-events: none; }
+.edit-mode .btn:hover, .edit-mode .feature:hover { transform: none; }
+.edit-mode .is-hidden > * { opacity: .35; }
+.edit-mode .is-hidden::before { content: 'Hidden on live site'; position: absolute; z-index: 5; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 6px 12px; border-radius: 8px; background: #111827; color: #fff; font: 600 12px/1 Inter, system-ui, sans-serif; }
+
+.ed-chip, .ed-tools, .ed-add { font: 600 12px/1 Inter, system-ui, sans-serif; letter-spacing: 0; text-transform: none; }
+.ed-chip { position: absolute; z-index: 40; top: 8px; left: 8px; padding: 6px 9px; border-radius: 7px; background: #2563eb; color: #fff; pointer-events: none; box-shadow: 0 4px 12px -4px rgba(37, 99, 235, .6); }
+.ed-tools { position: absolute; z-index: 40; top: 8px; right: 8px; display: flex; gap: 2px; padding: 3px; border-radius: 9px; background: #111827; box-shadow: 0 8px 20px -6px rgba(0, 0, 0, .45); }
+.ed-tools button, .ed-add { display: inline-grid; place-items: center; border: 0; cursor: pointer; }
+.ed-tools button { width: 30px; height: 28px; border-radius: 6px; background: transparent; color: #e5e7eb; font-size: 15px; }
+.ed-tools button:hover { background: rgba(255, 255, 255, .12); color: #fff; }
+.ed-tools button[data-tool="delete"]:hover { background: #dc2626; }
+.ed-tools button:disabled { opacity: .3; cursor: default; background: none; }
+.ed-tools .ico, .ed-add .ico { width: 1em; height: 1em; }
+.ed-add { position: absolute; z-index: 40; left: 50%; bottom: 10px; transform: translateX(-50%); display: inline-flex; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; background: #2563eb; color: #fff; box-shadow: 0 8px 20px -6px rgba(37, 99, 235, .7); }
+.ed-add:hover { background: #1d4ed8; }
+.ed-flash { animation: ed-flash 1s ease; }
+@keyframes ed-flash { 0% { box-shadow: inset 0 0 0 9999px rgba(37, 99, 235, .12); } 100% { box-shadow: inset 0 0 0 9999px rgba(37, 99, 235, 0); } }

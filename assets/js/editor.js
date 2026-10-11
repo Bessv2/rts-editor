@@ -1,0 +1,1595 @@
+// Visual site editor. Edits content/site.json through a live canvas.
+import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft } from './publish.js';
+import { kv, versions } from './store.js';
+import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
+
+// Refuse to run inside another site's frame (clickjacking protection;
+// GitHub Pages can't send X-Frame-Options headers).
+if (window.top !== window.self) {
+  document.body.innerHTML = '<p style="padding:40px;font-family:system-ui">The editor can only be opened directly.</p>';
+  throw new Error('Editor must not be framed');
+}
+
+// The site's theme (sections, renderer, page builder) comes from the live site.
+let theme;
+try {
+  theme = await loadTheme();
+} catch (err) {
+  showFatal(err.message);
+  throw err;
+}
+const {
+  BLOCKS, STYLE_FIELDS, BLOCK_GROUPS, renderPage, renderSection, renderPostPage, postTitle, formatDate, themeCSS, fontsHref,
+  getPath, setPath, esc, pageHref, rich, THEME_PRESETS, FONTS, icon, ICON_NAMES, SOCIAL, migrate, validate, POSTS_BASE, buildSite, staleFiles, safeSrc,
+} = theme;
+const siteAsset = (src) => toSiteAsset(src, safeSrc);
+
+const DRAFT_KEY = 'rts-editor-draft';
+const GH_KEY = 'rts-editor-github';
+const CLIP_KEY = 'rts-editor-clipboard';
+const DEFAULT_REPO = { owner: CONFIG.repo.owner, repo: CONFIG.repo.name, branch: CONFIG.repo.branch };
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const uid = (p = 's') => `${p}-${Math.random().toString(36).slice(2, 9)}`;
+const clone = (v) => JSON.parse(JSON.stringify(v));
+
+const state = {
+  doc: null, page: 0, sel: null, tab: 'add', device: 'desktop',
+  history: [], future: [], snap: '', published: '',
+  open: new Set(), commitTimer: 0, ghToken: '', clipboard: null, post: null,
+};
+
+// ---------------------------------------------------------------------------
+// DOM helper
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') n.className = v;
+    else if (k === 'html') n.innerHTML = v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else if (k in n && typeof v !== 'string') n[k] = v;
+    else n.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return n;
+}
+const put = (node, ...kids) => { node.append(...kids.filter((k) => k != null && k !== false)); return node; };
+const ico = (name) => el('span', { 'data-icon': name, html: icon(name) });
+function hydrateIcons(root = document) { $$('[data-icon]:empty', root).forEach((n) => { n.innerHTML = icon(n.dataset.icon); }); }
+
+// ---------------------------------------------------------------------------
+// Document helpers
+const page = () => state.doc.pages[state.page];
+const sections = () => page().sections;
+const findSection = (id) => sections().find((s) => s.id === id);
+const isChrome = (id) => id === '__header' || id === '__footer';
+const targetFor = (id) => (isChrome(id) ? state.doc.site : findSection(id)?.data);
+
+function newSection(type, overrides = {}) {
+  return { id: uid(), type, data: { ...BLOCKS[type].defaults(), ...overrides } };
+}
+
+function sectionSummary(sec) {
+  const d = sec.data || {};
+  return d.heading || d.items?.[0]?.title || d.items?.[0]?.value || d.caption || d.text || '';
+}
+
+// ---------------------------------------------------------------------------
+// History + drafts
+function commit() {
+  clearTimeout(state.commitTimer);
+  state.commitTimer = 0;
+  const s = JSON.stringify(state.doc);
+  if (s === state.snap) return;
+  state.history.push(state.snap);
+  if (state.history.length > 150) state.history.shift();
+  state.future = [];
+  state.snap = s;
+  saveDraft(s);
+  updateTopbar();
+}
+function commitSoon() { clearTimeout(state.commitTimer); state.commitTimer = setTimeout(commit, 500); }
+function flushCommit() { if (state.commitTimer) commit(); }
+
+function saveDraft(s = JSON.stringify(state.doc)) {
+  try { localStorage.removeItem(DRAFT_KEY); } catch { /* legacy draft location */ }
+  const p = s === state.published ? kv.del('draft') : kv.set('draft', { savedAt: Date.now(), json: s });
+  return p.catch(() => toast('Could not save your draft in this browser. Publish or download a backup to keep your work.', { error: true }));
+}
+
+function restore(snap) {
+  state.doc = JSON.parse(snap);
+  state.snap = snap;
+  state.page = Math.min(state.page, state.doc.pages.length - 1);
+  if (state.sel && !isChrome(state.sel) && !findSection(state.sel)) state.sel = null;
+  saveDraft(snap);
+  refreshAll();
+}
+function undo() { flushCommit(); if (!state.history.length) return; state.future.push(state.snap); restore(state.history.pop()); }
+function redo() { if (!state.future.length) return; state.history.push(state.snap); restore(state.future.pop()); }
+
+// ---------------------------------------------------------------------------
+// Canvas
+const frame = $('#canvas');
+const cdoc = () => frame.contentDocument;
+
+function canvasHTML() {
+  const t = state.doc.theme || {};
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <base href="${esc(`${SITE}/`)}">
+    <link id="theme-fonts" rel="stylesheet" href="${esc(fontsHref(t))}">
+    <link rel="stylesheet" href="${esc(`${SITE}/assets/css/site.css`)}"><link rel="stylesheet" href="${esc(new URL('assets/css/editor-canvas.css', location.href).href)}">
+    <style id="theme-vars">${themeCSS(t)}</style></head>
+    <body class="edit-mode"><div id="app"></div></body></html>`;
+}
+
+function initCanvas() {
+  return new Promise((resolve) => {
+    frame.addEventListener('load', function onLoad() {
+      const d = cdoc();
+      if (!d?.getElementById('app')) return; // initial about:blank
+      frame.removeEventListener('load', onLoad);
+      d.addEventListener('click', onCanvasClick, true);
+      d.addEventListener('input', onCanvasInput);
+      d.addEventListener('keydown', onCanvasKey);
+      d.addEventListener('paste', onCanvasPaste);
+      d.addEventListener('focusin', onCanvasFocusIn);
+      d.addEventListener('focusout', onCanvasFocusOut);
+      d.addEventListener('submit', (e) => e.preventDefault(), true);
+      resolve();
+    });
+    frame.srcdoc = canvasHTML();
+  });
+}
+
+function makeEditable(root) {
+  $$('[data-edit]', root).forEach((n) => {
+    try { n.contentEditable = 'plaintext-only'; } catch { n.contentEditable = 'true'; }
+    n.spellcheck = true;
+  });
+}
+
+function renderCanvas({ keepScroll = true } = {}) {
+  const d = cdoc();
+  if (!d?.getElementById('app')) return;
+  const y = d.defaultView.scrollY;
+  const app = d.getElementById('app');
+  const post = state.post && findPost(state.post);
+  app.innerHTML = post ? renderPostPage(state.doc, post, { preview: true }) : renderPage(state.doc, state.page, { edit: true });
+  makeEditable(app);
+  decorateSelection();
+  d.defaultView.scrollTo(0, keepScroll ? y : 0);
+}
+
+function refreshSection(id) {
+  if (isChrome(id)) { renderCanvas(); return; }
+  const d = cdoc();
+  const old = d.querySelector(`[data-section-id="${CSS.escape(id)}"]`);
+  const sec = findSection(id);
+  if (!old || !sec) { renderCanvas(); return; }
+  const tmp = d.createElement('div');
+  tmp.innerHTML = renderSection(sec, { edit: true, site: state.doc });
+  const fresh = tmp.firstElementChild;
+  old.replaceWith(fresh);
+  makeEditable(fresh);
+  decorateSelection();
+}
+
+function applyTheme() {
+  const d = cdoc();
+  const t = state.doc.theme || {};
+  d.getElementById('theme-vars').textContent = themeCSS(t);
+  const link = d.getElementById('theme-fonts');
+  const href = fontsHref(t);
+  if (link.getAttribute('href') !== href) link.setAttribute('href', href);
+}
+
+function decorateSelection() {
+  const d = cdoc();
+  $$('.ed-chip, .ed-tools, .ed-add', d).forEach((n) => n.remove());
+  $$('.is-selected', d).forEach((n) => n.classList.remove('is-selected'));
+  if (!state.sel) return;
+  const node = d.querySelector(`[data-section-id="${CSS.escape(state.sel)}"]`);
+  if (!node) return;
+  node.classList.add('is-selected');
+  const chip = d.createElement('div');
+  chip.className = 'ed-chip';
+  chip.textContent = node.dataset.label;
+  node.append(chip);
+  if (isChrome(state.sel)) return;
+  const i = sections().findIndex((s) => s.id === state.sel);
+  const hidden = findSection(state.sel).hidden;
+  const tools = d.createElement('div');
+  tools.className = 'ed-tools';
+  tools.innerHTML = [
+    ['up', 'chevron-up', 'Move up', i === 0], ['down', 'chevron-down', 'Move down', i === sections().length - 1],
+    ['duplicate', 'copy', 'Duplicate'], ['hide', hidden ? 'eye' : 'eye-off', hidden ? 'Show on live site' : 'Hide on live site'],
+    ['copy', 'clipboard2', 'Copy (paste on any page)'], ['save', 'bookmark', 'Save to reuse later'],
+    ['settings', 'sliders', 'Edit settings'], ['delete', 'trash', 'Delete'],
+  ].map(([t, ic, title, dis]) => `<button type="button" data-tool="${t}" title="${title}"${dis ? ' disabled' : ''}>${icon(ic)}</button>`).join('');
+  node.append(tools);
+  const add = d.createElement('button');
+  add.type = 'button';
+  add.className = 'ed-add';
+  add.dataset.tool = 'add';
+  add.innerHTML = `${icon('plus')}Add section`;
+  node.append(add);
+}
+
+function scrollToSection(id, flash = false) {
+  const node = cdoc()?.querySelector(`[data-section-id="${CSS.escape(id)}"]`);
+  if (!node) return;
+  node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (flash) { node.classList.add('ed-flash'); setTimeout(() => node.classList.remove('ed-flash'), 1000); }
+}
+
+function onCanvasClick(e) {
+  const tool = e.target.closest('[data-tool]');
+  if (tool) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!tool.disabled) runTool(tool.dataset.tool, state.sel);
+    return;
+  }
+  if (e.target.closest('a, summary, button')) e.preventDefault();
+  const sec = e.target.closest('[data-section-id]');
+  const id = sec?.dataset.sectionId || null;
+  if (id !== state.sel) select(id);
+}
+
+function onCanvasInput(e) {
+  const n = e.target.closest?.('[data-edit]');
+  if (!n) return;
+  const id = n.closest('[data-section-id]')?.dataset.sectionId;
+  const target = targetFor(id);
+  if (!target) return;
+  let value = n.innerText;
+  value = n.hasAttribute('data-ml') ? value.replace(/\n$/, '') : value.replace(/\s*\n\s*/g, ' ');
+  if (value === '' && n.innerHTML !== '') n.innerHTML = ''; // so the placeholder reappears
+  setPath(target, n.dataset.edit, value);
+  if (state.sel !== id) select(id, { quiet: true });
+  const input = $(`#inspector [data-path="${CSS.escape(n.dataset.edit)}"]`);
+  if (input && document.activeElement !== input) input.value = value;
+  if (id === '__header' && n.dataset.edit === 'name') {
+    const fb = cdoc().querySelector('.site-footer .brand__name');
+    if (fb) fb.textContent = value;
+  }
+  commitSoon();
+}
+
+// Formatted paragraphs show their raw **markdown** while being edited.
+function richTarget(e) {
+  const n = e.target.closest?.('[data-rich]');
+  const id = n?.closest('[data-section-id]')?.dataset.sectionId;
+  return n && id ? { n, raw: String(getPath(targetFor(id), n.dataset.edit) ?? '') } : null;
+}
+function onCanvasFocusIn(e) {
+  const r = richTarget(e);
+  if (r && r.n.textContent !== r.raw) r.n.textContent = r.raw;
+}
+function onCanvasFocusOut(e) {
+  flushCommit();
+  const r = richTarget(e);
+  if (r) r.n.innerHTML = rich(r.raw);
+}
+
+function onCanvasKey(e) {
+  const n = e.target.closest?.('[data-edit]');
+  if (n) {
+    if (e.key === 'Escape' || (e.key === 'Enter' && !n.hasAttribute('data-ml'))) { e.preventDefault(); n.blur(); }
+    if ((e.metaKey || e.ctrlKey) && /^[zy]$/i.test(e.key)) { /* let browser undo inside text */ return; }
+    return;
+  }
+  onGlobalKey(e);
+}
+
+function onCanvasPaste(e) {
+  const n = e.target.closest?.('[data-edit]');
+  if (!n || n.contentEditable === 'plaintext-only') return;
+  e.preventDefault();
+  cdoc().execCommand('insertText', false, e.clipboardData.getData('text/plain'));
+}
+
+// ---------------------------------------------------------------------------
+// Selection + section operations
+function select(id, { quiet = false, scroll = false } = {}) {
+  flushCommit();
+  state.sel = id;
+  decorateSelection();
+  renderInspector();
+  if (state.tab === 'layers') renderPanel();
+  if (scroll && id) scrollToSection(id);
+  if (!quiet && id && isChrome(id)) { /* header/footer use the site panel */ }
+}
+
+function insertIndex() {
+  const i = sections().findIndex((s) => s.id === state.sel);
+  return i === -1 ? sections().length : i + 1;
+}
+
+function addSection(type) {
+  insertSection(newSection(type, type === 'hero' && state.page > 0 ? { layout: 'center', pad: 'normal' } : {}), `${BLOCKS[type].label} added`);
+}
+
+// Inserts a copy of a section after the selection (or at the end).
+function insertSection(section, message) {
+  const sec = clone(section);
+  sec.id = uid();
+  const at = state.sel === '__header' ? 0 : insertIndex();
+  sections().splice(at, 0, sec);
+  commit();
+  state.sel = sec.id;
+  renderCanvas();
+  renderInspector();
+  renderPanel();
+  setTimeout(() => scrollToSection(sec.id, true), 30);
+  toast(message || `${BLOCKS[sec.type]?.label || 'Section'} added`);
+}
+
+function getClipboard() {
+  if (state.clipboard) return state.clipboard;
+  try { return JSON.parse(localStorage.getItem(CLIP_KEY) || 'null'); } catch { return null; }
+}
+
+function copySection(id) {
+  const sec = findSection(id);
+  if (!sec) return;
+  state.clipboard = clone(sec);
+  try { localStorage.setItem(CLIP_KEY, JSON.stringify(sec)); } catch { /* too large; memory copy still works */ }
+  toast(`${BLOCKS[sec.type].label} copied. Paste it on any page from the Add tab or with Ctrl+V.`);
+  if (state.tab === 'add') renderPanel();
+}
+
+function pasteSection() {
+  const clip = getClipboard();
+  if (clip && BLOCKS[clip.type]) insertSection(clip, `${BLOCKS[clip.type].label} pasted`);
+}
+
+function saveSection(id) {
+  const sec = findSection(id);
+  if (!sec) return;
+  const name = prompt('Name this saved section', sectionSummary(sec) || BLOCKS[sec.type].label);
+  if (name === null) return;
+  state.doc.saved ||= [];
+  state.doc.saved.push({ id: uid('saved'), name: name.trim() || BLOCKS[sec.type].label, section: clone(sec) });
+  commit();
+  if (state.tab === 'add') renderPanel();
+  toast('Saved. Find it at the top of the Add tab.');
+}
+
+function runTool(tool, id) {
+  const list = sections();
+  const i = list.findIndex((s) => s.id === id);
+  if (tool === 'add') { setTab('add'); return; }
+  if (tool === 'copy') { copySection(id); return; }
+  if (tool === 'save') { saveSection(id); return; }
+  if (tool === 'settings') { $('#inspector').scrollTop = 0; $('#inspector .in, #inspector textarea')?.focus(); return; }
+  if (i === -1) return;
+  if (tool === 'up' || tool === 'down') {
+    const j = tool === 'up' ? i - 1 : i + 1;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    commit(); renderCanvas(); renderPanel();
+    setTimeout(() => scrollToSection(id), 20);
+  } else if (tool === 'duplicate') {
+    const copy = clone(list[i]);
+    copy.id = uid();
+    list.splice(i + 1, 0, copy);
+    state.sel = copy.id;
+    commit(); renderCanvas(); renderPanel(); renderInspector();
+    setTimeout(() => scrollToSection(copy.id, true), 20);
+  } else if (tool === 'hide') {
+    list[i].hidden = !list[i].hidden;
+    commit(); refreshSection(id); renderPanel(); renderInspector();
+    toast(list[i].hidden ? 'Section hidden on the live site' : 'Section visible again');
+  } else if (tool === 'delete') {
+    const label = BLOCKS[list[i].type]?.label || 'Section';
+    list.splice(i, 1);
+    state.sel = null;
+    commit(); renderCanvas(); renderPanel(); renderInspector();
+    toast(`${label} deleted`, { action: 'Undo', onAction: undo });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inspector (right panel)
+const SITE_FIELDS = [
+  { key: 'name', label: 'Business name', type: 'text' },
+  { key: 'logo', label: 'Logo image', type: 'image', help: 'Optional. Wide logos look best around 36px tall.' },
+  { key: 'logoIcon', label: 'Logo icon (when no image)', type: 'icon', when: (d) => !d.logo },
+  { key: 'headerStyle', label: 'Header style', type: 'segmented', options: [['light', 'Light'], ['dark', 'Dark']] },
+  { key: 'headerCta', label: 'Header button', type: 'button' },
+  { key: 'tagline', label: 'Footer tagline', type: 'textarea' },
+  { key: 'footerText', label: 'Footer note', type: 'text' },
+];
+
+function renderInspector() {
+  const box = $('#inspector');
+  const scroll = box.scrollTop;
+  box.replaceChildren();
+  if (state.post) {
+    box.append(el('div', { class: 'p-head' }, el('h2', {}, ico('pen'), 'Writing tips')), el('div', { class: 'p-body' },
+      el('p', { class: 'p-hint' }, 'The preview updates as you type. Use the toolbar above the text box, or type these yourself:'),
+      el('div', { class: 'md-cheats' }, [
+        ['**bold**', 'bold'], ['*italic*', 'italic'], ['[text](https://…)', 'link'], ['## Heading', 'section heading'],
+        ['- item', 'bullet list'], ['1. item', 'numbered list'], ['> quote', 'quote'], ['![caption](image)', 'image'], ['---', 'divider line'],
+      ].map(([code, what]) => el('div', {}, el('code', {}, code), el('span', {}, what)))),
+      el('p', { class: 'p-hint', style: 'margin-top:14px' }, 'Leave a blank line between paragraphs. Press Publish when you are ready for it to go live.')));
+    return;
+  }
+  if (!state.sel) {
+    box.append(el('div', { class: 'empty' },
+      el('span', { class: 'empty__icon' }, ico('sparkle')),
+      el('h3', {}, 'Select something to edit'),
+      el('p', {}, 'Click any section on the page. Click text to type directly on the page.'),
+      el('div', { class: 'kbd-list' },
+        el('div', {}, 'Undo / Redo', el('span', {}, el('kbd', {}, 'Ctrl Z'), ' ', el('kbd', {}, 'Ctrl ⇧ Z'))),
+        el('div', {}, 'Delete section', el('kbd', {}, 'Del')),
+        el('div', {}, 'Deselect', el('kbd', {}, 'Esc')),
+        el('div', {}, 'Save draft', el('kbd', {}, 'Ctrl S')))));
+    return;
+  }
+  if (isChrome(state.sel)) {
+    box.append(el('div', { class: 'p-head' }, el('h2', {}, ico('layout'), 'Header & footer')));
+    const body = el('div', { class: 'p-body' }, el('p', { class: 'p-hint' }, 'These appear on every page. Navigation links come from your Pages.'));
+    renderFields(body, SITE_FIELDS, state.doc.site, () => renderCanvas());
+    box.append(body);
+    box.scrollTop = scroll;
+    return;
+  }
+  const sec = findSection(state.sel);
+  const block = BLOCKS[sec.type];
+  box.append(el('div', { class: 'p-head' },
+    el('h2', {}, ico(block.icon), block.label),
+    el('div', { class: 'insp-actions' },
+      el('button', { class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show on live site' : 'Hide on live site', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
+      el('button', { class: 'ed-icon-btn ed-icon-btn--sm', title: 'Duplicate', onclick: () => runTool('duplicate', sec.id) }, ico('copy')),
+      el('button', { class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Delete', onclick: () => runTool('delete', sec.id) }, ico('trash')))));
+  const groups = [['Content', block.fields, true], ['Section style', STYLE_FIELDS, true]];
+  for (const [title, fields, open] of groups) {
+    const inner = el('div');
+    renderFields(inner, fields, sec.data, () => refreshSection(sec.id));
+    box.append(el('details', { class: 'insp-group', open }, el('summary', {}, title, el('span', { class: 'chev' }, ico('chevron-down'))), inner));
+  }
+  box.scrollTop = scroll;
+}
+
+// Builds form controls for a field schema. `onRender` refreshes the canvas.
+function renderFields(container, fields, target, onRender, base = '', rebuild = renderInspector) {
+  const change = (path, value, { structural = false, soon = false } = {}) => {
+    setPath(target, path, value);
+    onRender();
+    if (soon) commitSoon(); else commit();
+    if (structural) rebuild();
+  };
+  for (const f of fields) {
+    if (f.when && !f.when(base ? getPath(target, base.slice(0, -1)) : target)) continue;
+    const path = base + (f.key || '');
+    const val = f.key ? getPath(target, path) : undefined;
+    container.append(fieldControl(f, path, val, change, target, onRender));
+  }
+}
+
+function linkSuggestions() {
+  let dl = $('#link-suggest');
+  if (!dl) { dl = el('datalist', { id: 'link-suggest' }); document.body.append(dl); }
+  const opts = [];
+  state.doc.pages.forEach((p, i) => opts.push([pageHref(p, i), `Page: ${p.title}`]));
+  (state.doc.posts || []).forEach((p) => opts.push([`/${POSTS_BASE}/${p.slug}/`, `Post: ${postTitle(p)}`]));
+  state.doc.pages.forEach((p) => p.sections.forEach((s) => s.data?.anchor && opts.push([`#${s.data.anchor}`, `Section on current page: ${s.data.anchor}`])));
+  if (state.doc.site.email) opts.push([`mailto:${state.doc.site.email}`, 'Email']);
+  if (state.doc.site.phone) opts.push([`tel:${state.doc.site.phone.replace(/[^+\d]/g, '')}`, 'Phone']);
+  dl.replaceChildren(...[...new Map(opts)].map(([v, l]) => el('option', { value: v, label: l })));
+  return 'link-suggest';
+}
+
+function fieldControl(f, path, val, change, target, onRender) {
+  const wrap = el('div', { class: 'f' });
+  const label = f.label ? el('label', {}, f.label) : null;
+  const help = f.help ? el('p', { class: 'f__help' }, f.help) : null;
+  switch (f.type) {
+    case 'note':
+      return el('p', { class: 'note' }, f.text);
+    case 'text':
+    case 'link': {
+      const input = el('input', { class: 'in', type: 'text', value: val ?? '', 'data-path': path, list: f.type === 'link' ? linkSuggestions() : null,
+        oninput: (e) => change(path, e.target.value, { soon: true }) });
+      put(wrap, label, input, help);
+      return wrap;
+    }
+    case 'date': {
+      const input = el('input', { class: 'in', type: 'date', value: val || '', onchange: (e) => change(path, e.target.value) });
+      put(wrap, label, input, help);
+      return wrap;
+    }
+    case 'markdown': {
+      const ta = el('textarea', { class: 'md-in', rows: f.rows || 14, 'data-path': path, placeholder: f.placeholder || 'Start writing…', oninput: (e) => change(path, e.target.value, { soon: true }) });
+      ta.value = val ?? '';
+      const fire = () => { ta.focus(); ta.dispatchEvent(new Event('input')); };
+      const wrapSel = (before, after, ph) => {
+        const [a, b] = [ta.selectionStart, ta.selectionEnd];
+        const sel = ta.value.slice(a, b) || ph;
+        ta.setRangeText(before + sel + after, a, b, 'end');
+        if (a === b) ta.setSelectionRange(a + before.length, a + before.length + sel.length);
+        fire();
+      };
+      const prefix = (pre) => {
+        const start = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+        ta.setRangeText(pre, start, start, 'end');
+        fire();
+      };
+      const tools = [
+        [el('b', {}, 'B'), 'Bold', () => wrapSel('**', '**', 'bold text')],
+        [el('i', {}, 'I'), 'Italic', () => wrapSel('*', '*', 'italic text')],
+        [ico('link'), 'Link', () => { const url = prompt('Link address', 'https://'); if (url) wrapSel('[', `](${url.trim()})`, 'link text'); }],
+        [el('b', {}, 'H'), 'Heading', () => prefix('## ')],
+        [ico('list'), 'Bullet list', () => prefix('- ')],
+        [ico('quote'), 'Quote', () => prefix('> ')],
+        [ico('image'), 'Image', () => openMediaPicker((src) => { const nl = ta.value.indexOf('\n', ta.selectionEnd); const at = nl === -1 ? ta.value.length : nl; ta.setRangeText(`\n![](${mediaRef(src)})\n`, at, at, 'end'); fire(); })],
+      ];
+      put(wrap, label, el('div', { class: 'md-tools' }, tools.map(([content, title, fn]) => el('button', { type: 'button', title, onclick: fn }, content))), ta, help);
+      return wrap;
+    }
+    case 'textarea': {
+      const ta = el('textarea', { rows: 3, 'data-path': path, oninput: (e) => change(path, e.target.value, { soon: true }) });
+      ta.value = val ?? '';
+      put(wrap, label, ta, help || el('p', { class: 'f__help' }, 'Tip: **bold**, *italic*, [link text](https://…)'));
+      return wrap;
+    }
+    case 'select': {
+      const s = el('select', { onchange: (e) => change(path, e.target.value, { structural: true }) },
+        f.options.map(([v, l]) => el('option', { value: v, selected: String(val) === v }, l)));
+      put(wrap, label, s, help);
+      return wrap;
+    }
+    case 'segmented': {
+      const seg = el('div', { class: 'ed-seg ed-seg--full' }, f.options.map(([v, l]) =>
+        el('button', { type: 'button', class: String(val) === v ? 'is-on' : '', onclick: () => change(path, v, { structural: true }) }, l)));
+      put(wrap, el('span', { class: 'f__label' }, f.label), seg, help);
+      return wrap;
+    }
+    case 'swatches': {
+      const colors = { light: 'var(--sw-bg)', alt: 'var(--sw-surface)', dark: 'var(--sw-dark)', brand: 'var(--sw-primary)' };
+      const t = { ...THEME_PRESETS.midnight, ...state.doc.theme };
+      const real = { light: t.bg, alt: t.surface, dark: t.dark, brand: t.primary };
+      const row = el('div', { class: 'sw-row' }, f.options.map(([v, l]) =>
+        el('button', { type: 'button', class: `sw${val === v ? ' is-on' : ''}`, title: l, onclick: () => change(path, v, { structural: true }) },
+          el('i', { style: `background:${real[v] || colors[v]}` }), l)));
+      put(wrap, el('span', { class: 'f__label' }, f.label), row);
+      return wrap;
+    }
+    case 'toggle': {
+      const lab = el('label', { class: 'switch' }, f.label, el('input', { type: 'checkbox', checked: !!val, onchange: (e) => change(path, e.target.checked, { structural: true }) }));
+      put(wrap, lab, help);
+      return wrap;
+    }
+    case 'color': {
+      const hex = el('input', { class: 'in', type: 'text', value: val || '', maxlength: 7 });
+      const pick = el('input', { type: 'color', value: /^#[0-9a-f]{6}$/i.test(val) ? val : '#000000' });
+      pick.addEventListener('input', () => { hex.value = pick.value; change(path, pick.value, { soon: true }); });
+      hex.addEventListener('change', () => { if (/^#[0-9a-f]{6}$/i.test(hex.value)) { pick.value = hex.value; change(path, hex.value); } else hex.value = getPath(target, path); });
+      put(wrap, label, el('div', { class: 'color' }, pick, hex));
+      return wrap;
+    }
+    case 'button': {
+      const b = val || {};
+      const lbl = el('input', { class: 'in', type: 'text', placeholder: 'Button text (empty = hidden)', value: b.label || '', 'data-path': `${path}.label`,
+        oninput: (e) => change(`${path}.label`, e.target.value, { soon: true }) });
+      const url = el('input', { class: 'in', type: 'text', placeholder: 'Link: #/contact, https://…', value: b.href || '', list: linkSuggestions(),
+        oninput: (e) => change(`${path}.href`, e.target.value, { soon: true }) });
+      put(wrap, el('span', { class: 'f__label' }, f.label), el('div', { class: 'f-btn' }, lbl, el('div', { class: 'f-btn__url' }, ico('link'), url)), help);
+      return wrap;
+    }
+    case 'icon': {
+      const det = el('details', { class: 'icon-pick' },
+        el('summary', {}, ico(val || 'sparkle'), (val || 'Choose icon').replace(/-/g, ' '), el('span', { class: 'chev' }, ico('chevron-down'))),
+        el('div', { class: 'icon-grid' }, ICON_NAMES.map((n) =>
+          el('button', { type: 'button', title: n, class: n === val ? 'is-on' : '', onclick: () => change(path, n, { structural: true }) }, ico(n)))));
+      put(wrap, el('span', { class: 'f__label' }, f.label), det);
+      return wrap;
+    }
+    case 'image': {
+      const preview = el('div', { class: `img-field__preview${val ? ' has-img' : ''}`, style: val ? `background-image:url("${String(siteAsset(val)).replace(/["\\]/g, encodeURIComponent)}")` : '' }, val ? '' : 'No image');
+      const file = el('input', { type: 'file', accept: 'image/*', hidden: true, onchange: async (e) => {
+        const f0 = e.target.files[0];
+        if (!f0) return;
+        try { const src = await imageToDataURL(f0); addToMedia(src, f0.name); change(path, src, { structural: true }); } catch (err) { toast(err.message, { error: true }); }
+      } });
+      const url = el('input', { class: 'in', type: 'text', placeholder: 'or paste an image URL', value: String(val || '').startsWith('data:') ? '' : (val || ''),
+        onchange: (e) => change(path, e.target.value.trim(), { structural: true }) });
+      put(wrap, el('span', { class: 'f__label' }, f.label), el('div', { class: 'img-field' }, preview,
+        el('div', { class: 'img-field__btns' },
+          el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => file.click() }, ico('upload'), val ? 'Replace' : 'Upload'),
+          el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => openMediaPicker((src) => change(path, src, { structural: true })) }, ico('image'), 'Library'),
+          val ? el('button', { type: 'button', class: 'ed-btn ed-btn--sm ed-btn--danger', title: 'Remove image', onclick: () => change(path, '', { structural: true }) }, ico('trash')) : null),
+        url, file), help);
+      return wrap;
+    }
+    case 'list': {
+      const items = Array.isArray(val) ? val : [];
+      const list = el('div', { class: 'list-f' });
+      items.forEach((item, i) => {
+        const key = `${state.sel}:${path}.${i}`;
+        const isOpen = state.open.has(key);
+        const move = (dir) => {
+          const j = i + dir;
+          if (j < 0 || j >= items.length) return;
+          [items[i], items[j]] = [items[j], items[i]];
+          state.open.delete(key);
+          change(path, items, { structural: true });
+        };
+        const head = el('div', { class: 'list-item__head', onclick: (e) => {
+          if (e.target.closest('button')) return;
+          if (isOpen) state.open.delete(key); else state.open.add(key);
+          renderInspector();
+        } },
+        el('span', { class: 'chev' }, ico('chevron-right')),
+        el('span', { class: 't' }, String(item[f.itemLabel] || `Item ${i + 1}`)),
+        el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm', title: 'Move up', disabled: i === 0, onclick: () => move(-1) }, ico('chevron-up')),
+        el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm', title: 'Move down', disabled: i === items.length - 1, onclick: () => move(1) }, ico('chevron-down')),
+        el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Remove', onclick: () => { items.splice(i, 1); state.open.clear(); change(path, items, { structural: true }); } }, ico('trash')));
+        const node = el('div', { class: `list-item${isOpen ? ' is-open' : ''}` }, head);
+        if (isOpen) {
+          const body = el('div', { class: 'list-item__body' });
+          renderFields(body, f.itemFields, target, onRender, `${path}.${i}.`);
+          node.append(body);
+        }
+        list.append(node);
+      });
+      list.append(el('button', { type: 'button', class: 'list-add', onclick: () => {
+        items.push(f.item());
+        state.open.add(`${state.sel}:${path}.${items.length - 1}`);
+        change(path, items, { structural: true });
+      } }, ico('plus'), 'Add item'));
+      put(wrap, el('span', { class: 'f__label' }, f.label, el('span', { class: 'badge' }, String(items.length))), list);
+      return wrap;
+    }
+    default:
+      return wrap;
+  }
+}
+
+// Resize uploads so drafts stay small; SVGs are kept as-is.
+async function imageToDataURL(file) {
+  const read = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
+  if (file.type === 'image/svg+xml') {
+    if (file.size > 400_000) throw new Error('That SVG is too large (max 400 KB).');
+    return read(file);
+  }
+  if (!file.type.startsWith('image/')) throw new Error('Please choose an image file.');
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale);
+  c.height = Math.round(bmp.height * scale);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  let url = c.toDataURL('image/webp', 0.85);
+  if (!url.startsWith('data:image/webp')) url = c.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.85);
+  return url;
+}
+
+// ---------------------------------------------------------------------------
+// Left panel
+const THUMBS = {
+  hero: '<div class="thumb thumb--dark"><div class="t-row"><div style="display:grid;gap:4px"><i style="width:40%" class="t-acc"></i><i></i><i style="width:70%"></i><div class="t-row" style="width:60%"><i class="t-acc" style="height:8px"></i><i style="height:8px"></i></div></div><div class="t-box" style="height:36px"></div></div></div>',
+  logos: '<div class="thumb"><div class="t-row"><i></i><i></i><i></i><i></i></div></div>',
+  services: '<div class="thumb"><i style="width:40%;margin:0 auto" class="t-dark"></i><div class="t-row"><div class="t-box"></div><div class="t-box"></div><div class="t-box"></div></div></div>',
+  split: '<div class="thumb"><div class="t-row"><div class="t-img"></div><div style="display:grid;gap:4px;align-content:center"><i class="t-dark"></i><i></i><i style="width:60%"></i></div></div></div>',
+  stats: '<div class="thumb thumb--dark"><div class="t-row"><i class="t-acc" style="height:10px"></i><i class="t-acc" style="height:10px"></i><i class="t-acc" style="height:10px"></i></div><div class="t-row"><i></i><i></i><i></i></div></div>',
+  checklist: '<div class="thumb"><div class="t-row"><i class="t-acc"></i><i class="t-acc"></i></div><div class="t-row"><i></i><i></i></div><div class="t-row"><i></i><i></i></div></div>',
+  steps: '<div class="thumb"><div class="t-row"><div class="t-box"></div><div class="t-box"></div><div class="t-box"></div><div class="t-box"></div></div></div>',
+  testimonials: '<div class="thumb"><div class="t-row"><div class="t-box" style="height:34px"></div><div class="t-box" style="height:34px"></div></div></div>',
+  pricing: '<div class="thumb"><div class="t-row"><div class="t-box" style="height:40px"></div><div class="t-box" style="height:40px;border-color:#3b82f6"></div><div class="t-box" style="height:40px"></div></div></div>',
+  faq: '<div class="thumb"><div class="t-box" style="height:9px"></div><div class="t-box" style="height:9px"></div><div class="t-box" style="height:9px"></div></div>',
+  cta: '<div class="thumb thumb--brand"><div class="t-row" style="align-items:center"><div style="display:grid;gap:4px"><i></i><i style="width:60%"></i></div><i style="height:12px;background:#fff;flex:.5"></i></div></div>',
+  contact: '<div class="thumb"><div class="t-row"><div style="display:grid;gap:4px;align-content:center"><i class="t-dark"></i><i></i><i></i></div><div class="t-box" style="height:44px"></div></div></div>',
+  text: '<div class="thumb"><i class="t-dark" style="width:50%"></i><i></i><i></i><i style="width:70%"></i></div>',
+  blogfeed: '<div class="thumb"><div class="t-row"><div style="display:grid;gap:3px"><div class="t-img" style="height:18px"></div><i></i><i style="width:60%"></i></div><div style="display:grid;gap:3px"><div class="t-img" style="height:18px"></div><i></i><i style="width:60%"></i></div><div style="display:grid;gap:3px"><div class="t-img" style="height:18px"></div><i></i><i style="width:60%"></i></div></div></div>',
+  gallery: '<div class="thumb"><div class="t-row"><div class="t-img" style="height:20px"></div><div class="t-img" style="height:20px"></div><div class="t-img" style="height:20px"></div></div><div class="t-row"><div class="t-img" style="height:20px"></div><div class="t-img" style="height:20px"></div><div class="t-img" style="height:20px"></div></div></div>',
+  video: '<div class="thumb thumb--dark" style="place-items:center;display:grid"><span style="width:22px;height:22px;border-radius:50%;background:#3b82f6;display:block"></span></div>',
+  map: '<div class="thumb" style="background:radial-gradient(circle at 1px 1px,#93c5fd 1.2px,transparent 0) 0 0/8px 8px,#eff6ff;display:grid;place-items:center"><span style="width:12px;height:12px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#2563eb;display:block"></span></div>',
+  team: '<div class="thumb"><div class="t-row" style="justify-items:center"><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div></div></div>',
+  image: '<div class="thumb"><div class="t-img"></div></div>',
+};
+
+function setTab(tab) {
+  if (tab !== 'blog' && state.post) { flushCommit(); state.post = null; renderCanvas({ keepScroll: false }); renderInspector(); }
+  state.tab = tab;
+  $$('.ed-rail button').forEach((b) => b.classList.toggle('is-on', b.dataset.tab === tab));
+  renderPanel();
+}
+
+function renderPanel() {
+  const box = $('#panel');
+  const scroll = box.scrollTop;
+  box.replaceChildren();
+  ({ add: panelAdd, layers: panelLayers, pages: panelPages, media: panelMedia, blog: panelBlog, theme: panelTheme, site: panelSite, history: panelHistory, help: panelHelp })[state.tab](box);
+  box.scrollTop = scroll;
+}
+
+function panelHead(title, iconName, ...extra) { return el('div', { class: 'p-head' }, el('h2', {}, ico(iconName), title), ...extra); }
+
+function panelAdd(box) {
+  box.append(panelHead('Add a section', 'plus'));
+  const body = el('div', { class: 'p-body' });
+  const after = state.sel && !isChrome(state.sel) ? findSection(state.sel) : null;
+  body.append(el('div', { class: 'p-callout' }, ico('arrow-right'),
+    after ? `Adds after “${BLOCKS[after.type].label}”` : 'Adds to the end of the page',
+    after ? el('button', { type: 'button', onclick: () => select(null) }, 'Add at end') : null));
+  const clip = getClipboard();
+  if (clip) {
+    body.append(el('button', { type: 'button', class: 'ed-btn ed-btn--block', style: 'margin-bottom:8px', onclick: pasteSection },
+      ico('clipboard2'), `Paste copied ${BLOCKS[clip.type]?.label || 'section'}`));
+  }
+  if (state.doc.saved?.length) {
+    body.append(el('p', { class: 'p-sub' }, 'My saved sections'), el('div', { class: 'saved-list' }, state.doc.saved.map((sv) =>
+      el('div', { class: 'saved-item' },
+        el('button', { type: 'button', class: 'saved-item__main', title: 'Add this section', onclick: () => insertSection(sv.section) },
+          el('span', { class: 'layer__icon' }, ico(BLOCKS[sv.section.type]?.icon || 'layout')),
+          el('span', { class: 'layer__txt' }, el('strong', {}, sv.name), el('small', {}, BLOCKS[sv.section.type]?.label || ''))),
+        el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Remove from saved', onclick: () => {
+          state.doc.saved = state.doc.saved.filter((x) => x.id !== sv.id); commit(); renderPanel();
+        } }, ico('trash'))))));
+  }
+  for (const g of BLOCK_GROUPS) {
+    const entries = Object.entries(BLOCKS).filter(([, b]) => b.group === g);
+    if (!entries.length) continue;
+    body.append(el('p', { class: 'p-sub' }, g), el('div', { class: 'blocks' }, entries.map(([type, b]) =>
+      el('button', { type: 'button', class: 'block-card', title: b.description, onclick: () => addSection(type) },
+        el('div', { html: THUMBS[type] || '<div class="thumb"></div>' }),
+        el('strong', {}, b.label, el('small', {}, b.description))))));
+  }
+  box.append(body);
+}
+
+function panelLayers(box) {
+  box.append(panelHead(`Layers · ${page().title}`, 'layers'));
+  const body = el('div', { class: 'p-body' }, el('p', { class: 'p-hint' }, 'Drag to reorder. Click to select.'));
+  const list = el('ul', { class: 'layers' });
+  const fixed = (id, label) => el('li', { class: `layer is-fixed${state.sel === id ? ' is-sel' : ''}`, onclick: () => select(id, { scroll: true }) },
+    el('span', { class: 'layer__icon' }, ico('layout')), el('span', { class: 'layer__txt' }, el('strong', {}, label), el('small', {}, 'Shared on all pages')));
+  list.append(fixed('__header', 'Header'));
+  let dragId = null;
+  sections().forEach((sec) => {
+    const b = BLOCKS[sec.type];
+    const li = el('li', { class: `layer${state.sel === sec.id ? ' is-sel' : ''}${sec.hidden ? ' is-hidden' : ''}`, draggable: 'true',
+      onclick: (e) => { if (!e.target.closest('button')) select(sec.id, { scroll: true }); },
+      ondragstart: (e) => { dragId = sec.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', sec.id); },
+      ondragover: (e) => {
+        if (!dragId || dragId === sec.id) return;
+        e.preventDefault();
+        const r = li.getBoundingClientRect();
+        const before = e.clientY < r.top + r.height / 2;
+        li.classList.toggle('drop-before', before);
+        li.classList.toggle('drop-after', !before);
+      },
+      ondragleave: () => li.classList.remove('drop-before', 'drop-after'),
+      ondrop: (e) => {
+        e.preventDefault();
+        const before = li.classList.contains('drop-before');
+        li.classList.remove('drop-before', 'drop-after');
+        const arr = sections();
+        const from = arr.findIndex((s) => s.id === dragId);
+        const [moved] = arr.splice(from, 1);
+        let to = arr.findIndex((s) => s.id === sec.id);
+        if (!before) to += 1;
+        arr.splice(to, 0, moved);
+        dragId = null;
+        commit(); renderCanvas(); renderPanel();
+      },
+    },
+    el('span', { class: 'layer__grip' }, ico('grip')),
+    el('span', { class: 'layer__icon' }, ico(b.icon)),
+    el('span', { class: 'layer__txt' }, el('strong', {}, b.label), el('small', {}, sectionSummary(sec))),
+    el('span', { class: 'layer__actions' },
+      el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show' : 'Hide', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
+      el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Delete', onclick: () => runTool('delete', sec.id) }, ico('trash'))));
+    list.append(li);
+  });
+  list.append(fixed('__footer', 'Footer'));
+  body.append(list);
+  if (!sections().length) body.append(el('p', { class: 'p-hint', style: 'margin-top:12px' }, 'This page is empty — add a section from the Add tab.'));
+  box.append(body);
+}
+
+function slugify(s) { return String(s).toLowerCase().trim().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
+
+function goToPage(i) {
+  flushCommit();
+  state.post = null;
+  state.page = i;
+  state.sel = null;
+  renderCanvas({ keepScroll: false });
+  renderInspector();
+  renderPanel();
+  updateTopbar();
+}
+
+function panelPages(box) {
+  box.append(panelHead('Pages', 'file', el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: openAddPage }, ico('plus'), 'New')));
+  const body = el('div', { class: 'p-body' }, el('p', { class: 'p-hint' }, 'The first page is your home page. Pages shown in navigation appear in the header and footer.'));
+  const list = el('div', { class: 'pages' });
+  state.doc.pages.forEach((p, i) => {
+    const cur = i === state.page;
+    const item = el('div', { class: `page-item${cur ? ' is-current' : ''}` },
+      el('div', { class: 'page-item__row', onclick: (e) => { if (!e.target.closest('button') && !cur) goToPage(i); } },
+        ico(i === 0 ? 'home' : 'file'), el('strong', {}, p.title), el('small', {}, i === 0 ? '/' : `/${p.slug}`),
+        p.showInNav === false ? el('span', { class: 'badge' }, 'Hidden') : null));
+    if (cur) {
+      const b = el('div', { class: 'page-item__body' });
+      const upd = (rerender = true) => { commitSoon(); if (rerender) renderCanvas(); updateTopbar(); };
+      b.append(
+        el('div', { class: 'f', style: 'margin-top:10px' }, el('label', {}, 'Page name'), el('input', { class: 'in', value: p.title, oninput: (e) => {
+          const auto = p.slug === slugify(p.title);
+          p.title = e.target.value;
+          if (i > 0 && auto) { p.slug = slugify(p.title); const sl = $('.page-slug', b); if (sl) sl.value = p.slug; }
+          upd();
+        } })),
+        i > 0 ? el('div', { class: 'f' }, el('label', {}, 'Web address (yoursite.com/…/)'), el('input', { class: 'in page-slug', value: p.slug, oninput: (e) => { p.slug = slugify(e.target.value) || `page-${i}`; upd(); },
+          onchange: (e) => { e.target.value = p.slug; renderPanel(); } })) : null,
+        el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Show in navigation', el('input', { type: 'checkbox', checked: p.showInNav !== false, onchange: (e) => { p.showInNav = e.target.checked; commit(); renderCanvas(); renderPanel(); } }))),
+        el('p', { class: 'p-sub' }, 'Search engines'),
+        el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); } })),
+        el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); } }), { value: p.seoDescription || '' })),
+        el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
+          el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i <= 1, title: i === 0 ? 'Home stays first' : 'Move up', onclick: () => movePage(i, -1) }, ico('chevron-up')),
+          el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i === 0 || i === state.doc.pages.length - 1, title: 'Move down', onclick: () => movePage(i, 1) }, ico('chevron-down')),
+          el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => duplicatePage(i) }, ico('copy'), 'Duplicate'),
+          i > 0 ? el('button', { type: 'button', class: 'ed-btn ed-btn--sm ed-btn--danger', onclick: () => deletePage(i) }, ico('trash'), 'Delete') : null));
+      item.append(b);
+    }
+    list.append(item);
+  });
+  body.append(list);
+  box.append(body);
+}
+
+function uniqueSlug(base) {
+  let s = base || 'page';
+  let n = 2;
+  while (state.doc.pages.some((p) => p.slug === s)) s = `${base}-${n++}`;
+  return s;
+}
+
+function movePage(i, dir) {
+  const j = i + dir;
+  const ps = state.doc.pages;
+  if (j < 1 || j >= ps.length || i < 1) return;
+  [ps[i], ps[j]] = [ps[j], ps[i]];
+  state.page = j;
+  commit(); renderCanvas(); renderPanel(); updateTopbar();
+}
+
+function duplicatePage(i) {
+  const copy = clone(state.doc.pages[i]);
+  copy.id = uid('p');
+  copy.title = `${copy.title} copy`;
+  copy.slug = uniqueSlug(slugify(copy.title));
+  copy.sections.forEach((s) => { s.id = uid(); });
+  state.doc.pages.splice(i + 1, 0, copy);
+  commit();
+  goToPage(i + 1);
+}
+
+function deletePage(i) {
+  const p = state.doc.pages[i];
+  if (!confirm(`Delete the “${p.title}” page? You can undo this.`)) return;
+  state.doc.pages.splice(i, 1);
+  commit();
+  goToPage(Math.max(0, i - 1));
+  toast(`Page “${p.title}” deleted`, { action: 'Undo', onAction: undo });
+}
+
+const PAGE_TEMPLATES = {
+  blank: { label: 'Blank', desc: 'Just a header section', sections: ['hero'] },
+  services: { label: 'Services', desc: 'Grid, FAQ, call to action', sections: ['hero', 'services', 'faq', 'cta'] },
+  about: { label: 'About', desc: 'Story, skills, stats', sections: ['hero', 'split', 'checklist', 'stats'] },
+  landing: { label: 'Landing', desc: 'Full marketing page', sections: ['hero', 'logos', 'services', 'stats', 'steps', 'cta'] },
+  pricing: { label: 'Pricing', desc: 'Plans and FAQ', sections: ['hero', 'pricing', 'faq'] },
+  contact: { label: 'Contact', desc: 'Contact details + form', sections: ['contact'] },
+};
+
+function openAddPage() {
+  let tpl = 'blank';
+  const name = el('input', { class: 'in', placeholder: 'e.g. Pricing', value: '' });
+  const grid = el('div', { class: 'templates' });
+  const paint = () => grid.replaceChildren(...Object.entries(PAGE_TEMPLATES).map(([k, t]) =>
+    el('button', { type: 'button', class: `tpl${k === tpl ? ' is-on' : ''}`, onclick: () => { tpl = k; if (!name.value || Object.values(PAGE_TEMPLATES).some((x) => x.label === name.value)) name.value = k === 'blank' ? '' : t.label; paint(); } },
+      el('strong', {}, t.label), el('small', {}, t.desc))));
+  paint();
+  const create = () => {
+    const title = name.value.trim() || 'New page';
+    const isSub = true;
+    const secs = PAGE_TEMPLATES[tpl].sections.map((type) => newSection(type, type === 'hero' && isSub
+      ? { layout: 'center', pad: 'normal', eyebrow: title, heading: title, text: 'A short introduction to this page.', secondary: { label: '', href: '' } } : {}));
+    state.doc.pages.push({ id: uid('p'), title, slug: uniqueSlug(slugify(title) || 'page'), showInNav: true, seoTitle: '', seoDescription: '', sections: secs });
+    commit();
+    closeModal();
+    goToPage(state.doc.pages.length - 1);
+    toast(`Page “${title}” created`);
+  };
+  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') create(); });
+  openModal('New page', el('div', {},
+    el('p', { class: 'p-sub' }, 'Start from'), grid,
+    el('div', { class: 'f' }, el('label', {}, 'Page name'), name),
+    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn', onclick: closeModal }, 'Cancel'), el('button', { type: 'button', class: 'ed-btn ed-btn--primary', onclick: create }, 'Create page'))));
+  setTimeout(() => name.focus(), 50);
+}
+
+function panelTheme(box) {
+  const t = state.doc.theme;
+  box.append(panelHead('Design', 'droplet'));
+  const body = el('div', { class: 'p-body' });
+  const set = (k, v, soon = false) => { t[k] = v; applyTheme(); if (soon) commitSoon(); else { commit(); renderPanel(); } };
+  body.append(el('p', { class: 'p-sub' }, 'Color themes'), el('div', { class: 'presets' }, Object.entries(THEME_PRESETS).map(([k, p]) =>
+    el('button', { type: 'button', class: `preset${t.preset === k ? ' is-on' : ''}`, onclick: () => {
+      Object.assign(t, { preset: k, primary: p.primary, accent: p.accent, dark: p.dark, bg: p.bg, surface: p.surface, text: p.text });
+      applyTheme(); commit(); renderPanel(); if (state.sel) renderInspector();
+    } }, el('span', { class: 'preset__sw' }, ...[p.dark, p.primary, p.accent, p.surface].map((c) => el('span', { style: `background:${c}` }))), p.name))));
+  body.append(el('p', { class: 'p-sub' }, 'Colors'));
+  const colorRows = [['primary', 'Brand color'], ['accent', 'Accent'], ['dark', 'Dark sections'], ['surface', 'Tinted sections'], ['text', 'Text']];
+  for (const [k, l] of colorRows) {
+    const f = fieldControl({ type: 'color', label: l }, k, t[k], (path, v, o) => { t.preset = 'custom'; set(path, v, o?.soon); }, t, () => {});
+    body.append(f);
+  }
+  body.append(el('p', { class: 'p-sub' }, 'Typography'));
+  const fontSel = (k, l) => el('div', { class: 'f' }, el('label', {}, l), el('select', { onchange: (e) => set(k, e.target.value) },
+    Object.keys(FONTS).map((f) => el('option', { value: f, selected: t[k] === f, style: `font-family:'${f}'` }, f))));
+  body.append(fontSel('headingFont', 'Headings'), fontSel('bodyFont', 'Body text'));
+  body.append(el('p', { class: 'p-sub' }, 'Shape'));
+  body.append(fieldControl({ type: 'segmented', label: 'Corners', options: [['sharp', 'Sharp'], ['soft', 'Soft'], ['round', 'Round']] }, 'radius', t.radius, (p, v) => set(p, v), t));
+  body.append(fieldControl({ type: 'segmented', label: 'Buttons', options: [['rounded', 'Rounded'], ['pill', 'Pill']] }, 'buttons', t.buttons, (p, v) => set(p, v), t));
+  const css = el('textarea', { class: 'code-in', rows: 8, spellcheck: false, placeholder: '.hero__title { letter-spacing: -0.05em; }',
+    oninput: (e) => { t.customCSS = e.target.value; applyTheme(); commitSoon(); } });
+  css.value = t.customCSS || '';
+  body.append(el('details', { class: 'adv', open: !!t.customCSS }, el('summary', {}, ico('code'), 'Custom CSS (advanced)'),
+    el('p', { class: 'f__help' }, 'Added after the theme styles on every page.'), css));
+  box.append(body);
+}
+
+function panelSite(box) {
+  const s = state.doc.site;
+  box.append(panelHead('Site settings', 'sliders'));
+  const body = el('div', { class: 'p-body' });
+  body.append(el('div', { class: 'connected' },
+    el('span', { class: 'connected__dot' }),
+    el('div', {}, el('strong', {}, 'Connected to ', el('a', { href: `${SITE}/`, target: '_blank', rel: 'noopener' }, new URL(SITE).host)),
+      el('small', {}, `Publishes to ${CONFIG.repo.owner}/${CONFIG.repo.name} (${CONFIG.repo.branch}) · theme v${theme.EDITOR_API}`))));
+  const fields = [
+    { key: 'name', label: 'Business name', type: 'text' },
+    { key: 'url', label: 'Site address', type: 'text', help: 'Your full web address, e.g. https://roetechnologyservices.com. Used for search engines and share links.' },
+    { key: 'description', label: 'Site description (for search engines)', type: 'textarea' },
+    { type: 'note', text: 'Contact details are used in the Contact section and the footer.' },
+    { key: 'email', label: 'Email', type: 'text' },
+    { key: 'phone', label: 'Phone', type: 'text' },
+    { key: 'location', label: 'Location / service area', type: 'text' },
+    { key: 'formEndpoint', label: 'Form endpoint (optional)', type: 'text', help: 'Paste your Formspree (or similar) https:// URL to receive form messages by email. Spam protection is built in. Leave empty to open the visitor’s email app instead.' },
+  ];
+  body.append(el('p', { class: 'p-sub' }, 'Business'));
+  renderFields(body, fields, s, () => renderCanvas(), '', renderPanel);
+  body.append(el('p', { class: 'p-sub' }, 'Announcement bar'));
+  renderFields(body, [
+    { key: 'announcement.enabled', label: 'Show a bar above the header', type: 'toggle' },
+    { key: 'announcement.text', label: 'Message', type: 'text', when: (d) => d.announcement?.enabled },
+    { key: 'announcement.linkText', label: 'Link text (optional)', type: 'text', when: (d) => d.announcement?.enabled },
+    { key: 'announcement.link', label: 'Link', type: 'link', when: (d) => d.announcement?.enabled },
+  ], s, () => renderCanvas(), '', renderPanel);
+  body.append(el('p', { class: 'p-sub' }, 'Social links'), el('p', { class: 'p-hint' }, 'Shown as icons in the footer. Leave empty to hide.'));
+  renderFields(body, SOCIAL.map(([k, l]) => ({ key: `social.${k}`, label: l, type: 'text' })), s, () => renderCanvas(), '', renderPanel);
+  body.append(el('p', { class: 'p-sub' }, 'Branding & sharing'));
+  renderFields(body, [
+    { key: 'favicon', label: 'Browser tab icon', type: 'image', help: 'A square image, at least 64×64.' },
+    { key: 'shareImage', label: 'Share image', type: 'image', help: 'Shown when your site is shared on social media or messages. 1200×630 works best.' },
+  ], s, () => {}, '', renderPanel);
+  body.append(el('p', { class: 'p-sub' }, 'Header & footer'),
+    el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: () => select('__header', { scroll: true }) }, ico('layout'), 'Edit header & footer'));
+  body.append(el('p', { class: 'p-sub' }, 'Backup'),
+    el('div', { style: 'display:grid;gap:6px' },
+      el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: downloadJSON }, ico('download'), 'Download backup (site.json)'),
+      el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: importJSON }, ico('upload'), 'Restore from file'),
+      el('button', { type: 'button', class: 'ed-btn ed-btn--block ed-btn--danger', onclick: resetToPublished }, ico('refresh'), 'Discard draft (load live version)')));
+  box.append(body);
+}
+
+function panelHelp(box) {
+  box.append(panelHead('How it works', 'help'));
+  box.append(el('div', { class: 'p-body' },
+    el('ol', { class: 'help-steps' },
+      el('li', {}, el('strong', {}, 'Edit text on the page. '), 'Click any text in the preview and type.'),
+      el('li', {}, el('strong', {}, 'Select a section '), 'to change images, buttons, icons, colors and spacing on the right.'),
+      el('li', {}, el('strong', {}, 'Add sections '), 'from the Add tab. Reorder them with the arrows or drag in Layers.'),
+      el('li', {}, el('strong', {}, 'Format text '), 'with **bold**, *italic* and [link text](https://…).'),
+      el('li', {}, el('strong', {}, 'Reuse sections: '), 'copy a section and paste it on another page, or save it to reuse later.'),
+      el('li', {}, el('strong', {}, 'Images: '), 'upload once in the Images tab, then pick from the Library anywhere. Any section can have a background image.'),
+      el('li', {}, el('strong', {}, 'Change the look '), 'in Design — one click swaps the whole color theme.'),
+      el('li', {}, el('strong', {}, 'History '), 'keeps saved versions, cloud drafts and every published version.'),
+      el('li', {}, el('strong', {}, 'Your work saves automatically '), 'as a draft in this browser.'),
+      el('li', {}, el('strong', {}, 'Click Publish '), 'to make it live. The site updates about a minute later.')),
+    el('p', { class: 'p-sub' }, 'Shortcuts'),
+    el('div', { class: 'kbd-list' },
+      el('div', {}, 'Undo', el('kbd', {}, 'Ctrl Z')), el('div', {}, 'Redo', el('kbd', {}, 'Ctrl ⇧ Z')),
+      el('div', {}, 'Delete selected section', el('kbd', {}, 'Del')), el('div', {}, 'Finish editing text', el('kbd', {}, 'Esc')),
+      el('div', {}, 'Duplicate section', el('kbd', {}, 'Ctrl D')), el('div', {}, 'Copy / paste section', el('span', {}, el('kbd', {}, 'Ctrl C'), ' ', el('kbd', {}, 'Ctrl V'))),
+      el('div', {}, 'Save draft', el('kbd', {}, 'Ctrl S')))));
+}
+
+// ---------------------------------------------------------------------------
+// Data import / export / publish
+function downloadJSON() {
+  const blob = new Blob([`${JSON.stringify(state.doc, null, 2)}\n`], { type: 'application/json' });
+  const a = el('a', { href: URL.createObjectURL(blob), download: 'site.json' });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function importJSON() {
+  const input = el('input', { type: 'file', accept: '.json,application/json' });
+  input.addEventListener('change', async () => {
+    try {
+      const raw = JSON.parse(await input.files[0].text());
+      if (!Array.isArray(raw.pages) || !raw.pages.length || !raw.site) throw new Error();
+      state.doc = migrate(raw); state.page = 0; state.sel = null;
+      commit(); refreshAll();
+      toast('Site restored from file');
+    } catch { toast('That file is not a valid site.json backup.', { error: true }); }
+  });
+  input.click();
+}
+
+async function resetToPublished() {
+  if (!confirm('Discard your draft and load the live version? You can undo this.')) return;
+  try {
+    state.doc = migrate(await fetchPublished());
+    state.page = 0; state.sel = null;
+    commit(); refreshAll();
+    toast('Loaded the live version', { action: 'Undo', onAction: undo });
+  } catch (e) { toast(e.message, { error: true }); }
+}
+
+async function fetchPublished() {
+  const res = await fetch(`${SITE}/content/site.json?v=${Date.now()}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Could not load content/site.json (${res.status})`);
+  return res.json();
+}
+
+function loadGH() { try { return { ...DEFAULT_REPO, ...JSON.parse(localStorage.getItem(GH_KEY) || '{}') }; } catch { return { ...DEFAULT_REPO }; } }
+
+function openPublish() {
+  flushCommit();
+  const gh = loadGH();
+  const inp = (k, ph, type = 'text') => el('input', { class: 'in', type, value: gh[k] || '', placeholder: ph, autocomplete: 'off', spellcheck: false });
+  const owner = inp('owner', 'GitHub user'); const repo = inp('repo', 'Repository'); const branch = inp('branch', 'main');
+  const token = inp('token', 'github_pat_…', 'password');
+  if (!gh.token && state.ghToken) token.value = state.ghToken;
+  const remember = el('input', { type: 'checkbox', checked: !!gh.token });
+  const msg = el('input', { class: 'in', value: 'Update site content' });
+  const log = el('div', { class: 'log', hidden: true });
+  const go = el('button', { type: 'button', class: 'ed-btn ed-btn--primary' }, ico('send'), 'Publish now');
+  const write = (t, cls) => { log.hidden = false; log.append(el('div', { class: cls || '' }, t)); log.scrollTop = log.scrollHeight; };
+  go.addEventListener('click', async () => {
+    const cfg = { owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', token: token.value.trim() };
+    if (!cfg.owner || !cfg.repo || !cfg.token) { write('Fill in repository and token first.', 'err'); return; }
+    rememberGH(cfg, remember.checked);
+    const problems = validate(state.doc);
+    if (problems.length) { log.replaceChildren(); problems.forEach((pr) => write(pr, 'err')); write('Fix these, then publish again.', 'err'); return; }
+    go.disabled = true;
+    log.replaceChildren();
+    try {
+      const r = await publishToGitHub({ ...cfg, message: msg.value.trim() || 'Update site content', doc: state.doc, log: write, origin: SITE, buildSite, staleFiles });
+      state.published = JSON.stringify(state.doc);
+      saveDraft();
+      addVersion(`Published: ${msg.value.trim() || 'Update site content'}`).catch(() => {});
+      updateTopbar();
+      write('Done! Your site will update in about a minute.', 'ok');
+      if (r.commitUrl) log.append(el('div', {}, el('a', { href: r.commitUrl, target: '_blank', rel: 'noopener', style: 'color:#93c5fd' }, 'View commit on GitHub')));
+      toast('Published! Changes go live in about a minute.');
+    } catch (e) {
+      write(`Error: ${e.message}`, 'err');
+    } finally { go.disabled = false; }
+  });
+
+  const ghPane = el('div', {},
+    el('p', {}, 'Publishing saves your changes to your website’s GitHub repository. GitHub Pages then updates the live site automatically.'),
+    el('details', { class: 'note' }, el('summary', { style: 'cursor:pointer;font-weight:600' }, 'First time? Create an access token'),
+      el('ol', { class: 'steps-mini', style: 'margin-top:8px' },
+        el('li', {}, 'Open ', el('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank', rel: 'noopener' }, 'GitHub → Fine-grained tokens'), '.'),
+        el('li', {}, 'Repository access: “Only select repositories” → your site repository.'),
+        el('li', {}, 'Permissions → Repository → Contents: “Read and write”.'),
+        el('li', {}, 'Generate, copy the token and paste it below.'))),
+    el('div', { class: 'f-row' }, el('div', { class: 'f' }, el('label', {}, 'Owner'), owner), el('div', { class: 'f' }, el('label', {}, 'Repository'), repo)),
+    el('div', { class: 'f-row' }, el('div', { class: 'f' }, el('label', {}, 'Branch'), branch), el('div', { class: 'f' }, el('label', {}, 'Access token'), token)),
+    el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Remember token on this computer', remember)),
+    el('div', { class: 'f' }, el('label', {}, 'Change note'), msg),
+    log,
+    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn', onclick: closeModal }, 'Cancel'), go));
+
+  const filePane = el('div', { hidden: true },
+    el('p', {}, 'Prefer to publish by hand? Download your content file and replace content/site.json in the repository.'),
+    el('div', { class: 'note' }, 'Uploaded images are embedded inside the file when you publish this way.'),
+    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn ed-btn--primary', onclick: downloadJSON }, ico('download'), 'Download site.json')));
+
+  const tabs = el('div', { class: 'ed-tabs' });
+  const tab = (label, pane, on) => el('button', { type: 'button', class: on ? 'is-on' : '', onclick: (e) => {
+    $$('button', tabs).forEach((b) => b.classList.remove('is-on'));
+    e.currentTarget.classList.add('is-on');
+    ghPane.hidden = pane !== ghPane; filePane.hidden = pane !== filePane;
+  } }, label);
+  tabs.append(tab('Publish to GitHub', ghPane, true), tab('Download file', filePane));
+  openModal('Publish your site', el('div', {}, tabs, ghPane, filePane));
+}
+
+// ---------------------------------------------------------------------------
+// GitHub connection shared by publish, history and cloud drafts
+function rememberGH(cfg, persist) {
+  state.ghToken = cfg.token;
+  try { localStorage.setItem(GH_KEY, JSON.stringify(persist ? cfg : { ...cfg, token: '' })); } catch { /* ignore */ }
+}
+
+function currentGH() {
+  const gh = loadGH();
+  const token = gh.token || state.ghToken;
+  return token ? { ...gh, token } : null;
+}
+
+function needGH(reason) {
+  const ready = currentGH();
+  if (ready) return Promise.resolve(ready);
+  return new Promise((resolve) => {
+    const gh = loadGH();
+    const inp = (k, ph, type = 'text') => el('input', { class: 'in', type, value: gh[k] || '', placeholder: ph, autocomplete: 'off', spellcheck: false });
+    const owner = inp('owner', 'GitHub user'); const repo = inp('repo', 'Repository'); const branch = inp('branch', 'main');
+    const token = inp('token', 'github_pat_…', 'password');
+    const remember = el('input', { type: 'checkbox' });
+    const go = () => {
+      const cfg = { owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', token: token.value.trim() };
+      if (!cfg.owner || !cfg.repo || !cfg.token) { toast('Fill in repository and token first.', { error: true }); return; }
+      rememberGH(cfg, remember.checked);
+      closeModal();
+      resolve(cfg);
+    };
+    openModal('Connect to GitHub', el('div', {},
+      el('p', {}, reason),
+      el('div', { class: 'f-row' }, el('div', { class: 'f' }, el('label', {}, 'Owner'), owner), el('div', { class: 'f' }, el('label', {}, 'Repository'), repo)),
+      el('div', { class: 'f-row' }, el('div', { class: 'f' }, el('label', {}, 'Branch'), branch), el('div', { class: 'f' }, el('label', {}, 'Access token'), token)),
+      el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Remember token on this computer', remember)),
+      el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn', onclick: () => { closeModal(); resolve(null); } }, 'Cancel'),
+        el('button', { type: 'button', class: 'ed-btn ed-btn--primary', onclick: go }, 'Continue'))));
+    setTimeout(() => token.focus(), 50);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Blog: posts (full articles with their own page) and blurbs (short notes)
+const findPost = (id) => (state.doc.posts || []).find((p) => p.id === id);
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const byDate = (a, b) => String(b.date || '').localeCompare(String(a.date || ''));
+
+function uniquePostSlug(base, id) {
+  const root = base || 'post';
+  let slug = root;
+  let n = 2;
+  while (state.doc.posts.some((p) => p.slug === slug && p.id !== id)) slug = `${root}-${n++}`;
+  return slug;
+}
+
+function newPost(kind) {
+  const p = { id: uid('post'), kind, title: kind === 'post' ? 'Untitled post' : '', slug: '', date: localToday(), published: true, tags: '', image: '', summary: '', body: '', link: '' };
+  p.slug = uniquePostSlug(kind === 'post' ? 'untitled-post' : `note-${p.date}`, p.id);
+  state.doc.posts.unshift(p);
+  commit();
+  openPost(p.id);
+}
+
+function openPost(id) {
+  flushCommit();
+  state.post = id;
+  state.sel = null;
+  if (state.tab !== 'blog') { state.tab = 'blog'; $$('.ed-rail button').forEach((b) => b.classList.toggle('is-on', b.dataset.tab === 'blog')); }
+  renderCanvas({ keepScroll: false });
+  renderInspector();
+  renderPanel();
+}
+
+function closePost() {
+  flushCommit();
+  state.post = null;
+  renderCanvas({ keepScroll: false });
+  renderInspector();
+  renderPanel();
+}
+
+function deletePost(id) {
+  const p = findPost(id);
+  if (!p || !confirm(`Delete “${postTitle(p) || 'this entry'}”? You can undo this.`)) return;
+  state.doc.posts = state.doc.posts.filter((x) => x.id !== id);
+  commit();
+  closePost();
+  toast('Deleted', { action: 'Undo', onAction: undo });
+}
+
+function panelBlog(box) {
+  const current = state.post && findPost(state.post);
+  if (current) { panelPostEditor(box, current); return; }
+  box.append(panelHead('Blog', 'pen'));
+  const body = el('div', { class: 'p-body' },
+    el('div', { class: 'f-row' },
+      el('button', { type: 'button', class: 'ed-btn ed-btn--primary', onclick: () => newPost('post') }, ico('pen'), 'New post'),
+      el('button', { type: 'button', class: 'ed-btn', onclick: () => newPost('blurb') }, ico('sparkle'), 'New blurb')),
+    el('p', { class: 'p-hint', style: 'margin-top:10px' }, 'Posts are full articles with their own page. Blurbs are short notes, tips or links you like.'));
+  if (!state.doc.pages.some((pg) => pg.sections.some((sec) => sec.type === 'blogfeed'))) {
+    body.append(el('div', { class: 'p-callout' }, ico('arrow-right'), 'Add a “Blog feed” section to a page to show your posts.'));
+  }
+  const posts = [...state.doc.posts].sort(byDate);
+  body.append(el('p', { class: 'p-sub' }, `All entries (${posts.length})`));
+  body.append(posts.length
+    ? el('div', { class: 'post-list' }, posts.map((p) => el('button', { type: 'button', class: 'post-row', onclick: () => openPost(p.id) },
+      el('span', { class: 'layer__icon' }, ico((p.kind || 'post') === 'blurb' ? 'sparkle' : 'pen')),
+      el('span', { class: 'layer__txt' }, el('strong', {}, postTitle(p) || 'Untitled'), el('small', {}, `${formatDate(p.date)} · ${(p.kind || 'post') === 'blurb' ? 'Blurb' : 'Post'}`)),
+      p.published === false ? el('span', { class: 'badge' }, 'Draft') : null)))
+    : el('p', { class: 'p-hint' }, 'Nothing here yet. Write your first post!'));
+  box.append(body);
+}
+
+function panelPostEditor(box, p) {
+  const blurb = (p.kind || 'post') === 'blurb';
+  box.append(el('div', { class: 'p-head' },
+    el('button', { type: 'button', class: 'ed-icon-btn', title: 'Back to all entries', onclick: closePost }, el('span', { class: 'flip' }, ico('arrow-right'))),
+    el('h2', {}, blurb ? 'Edit blurb' : 'Edit post'),
+    el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--danger', title: 'Delete', onclick: () => deletePost(p.id) }, ico('trash'))));
+  const body = el('div', { class: 'p-body' });
+  const preview = () => renderCanvas();
+  const autoSlug = () => {
+    if (!blurb && !p.slugLocked) {
+      p.slug = uniquePostSlug(slugify(postTitle(p)) || 'post', p.id);
+      const input = $('#panel [data-path="slug"]');
+      if (input && document.activeElement !== input) input.value = p.slug;
+    }
+    preview();
+  };
+  renderFields(body, [
+    { key: 'kind', label: 'Type', type: 'segmented', options: [['post', 'Post'], ['blurb', 'Blurb']] },
+    { key: 'published', label: 'Show on website', type: 'toggle', help: 'Turn off to keep this as a private draft.' },
+  ], p, preview, '', renderPanel);
+  renderFields(body, [{ key: 'title', label: blurb ? 'Title (optional)' : 'Title', type: 'text' }], p, autoSlug, '', renderPanel);
+  renderFields(body, [
+    { key: 'date', label: 'Date', type: 'date' },
+    { key: 'tags', label: 'Tags', type: 'text', help: 'Separate with commas, e.g. Security, Tips' },
+    ...(blurb ? [
+      { key: 'body', label: 'Blurb', type: 'markdown', rows: 6, placeholder: 'A quick thought, tip or something you liked…' },
+      { key: 'link', label: 'Source link (optional)', type: 'text', help: 'Shown as “via example.com”.' },
+    ] : [
+      { key: 'image', label: 'Cover image', type: 'image' },
+      { key: 'summary', label: 'Summary', type: 'textarea', help: 'One or two sentences shown on the blog card and in search results.' },
+      { key: 'body', label: 'Article', type: 'markdown', rows: 18 },
+      { key: 'link', label: 'Source link (optional)', type: 'text', help: 'Credit an article you are writing about.' },
+    ]),
+  ], p, preview, '', renderPanel);
+  if (!blurb) {
+    renderFields(body, [{ key: 'slug', label: 'Web address', type: 'text', help: `The end of this post’s link (yoursite.com/${POSTS_BASE}/…/). Changing it breaks links people already shared.` }], p, () => {
+      p.slug = uniquePostSlug(slugify(p.slug) || 'post', p.id);
+      p.slugLocked = true;
+      preview();
+    }, '', renderPanel);
+  }
+  box.append(body);
+}
+
+// ---------------------------------------------------------------------------
+// Media library
+let libraryCache;
+function loadLibrary() {
+  libraryCache ||= fetch(`${SITE}/assets/library/manifest.json`).then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  return libraryCache;
+}
+
+function addToMedia(src, name = 'Image') {
+  state.doc.media ||= [];
+  if (!state.doc.media.some((m) => m.src === src)) state.doc.media.unshift({ id: uid('img'), src, name, addedAt: Date.now() });
+}
+
+// Short reference for post text, so uploaded images don't paste huge data into it.
+function mediaRef(src) {
+  if (!String(src).startsWith('data:')) return src;
+  const m = (state.doc.media || []).find((x) => x.src === src);
+  if (!m) return src;
+  m.id ||= uid('img');
+  return `media:${m.id}`;
+}
+
+const IMAGE_KEYS = new Set(['image', 'bgImage', 'logo', 'favicon', 'shareImage']);
+function siteImages() {
+  const out = new Map((state.doc.media || []).map((m) => [m.src, { ...m, uploaded: true }]));
+  (function walk(node, key) {
+    if (Array.isArray(node)) node.forEach((n) => walk(n, key));
+    else if (node && typeof node === 'object') Object.entries(node).forEach(([k, v]) => walk(v, k));
+    else if (typeof node === 'string' && node && IMAGE_KEYS.has(key) && !out.has(node) && !node.startsWith('assets/library/')) out.set(node, { src: node, name: node.startsWith('data:') ? 'Uploaded image' : node.split('/').pop() });
+  })({ site: state.doc.site, pages: state.doc.pages, saved: state.doc.saved, posts: state.doc.posts }, '');
+  return [...out.values()];
+}
+
+async function uploadFiles(files) {
+  let last = '';
+  for (const f of files) {
+    try { last = await imageToDataURL(f); addToMedia(last, f.name); } catch (err) { toast(`${f.name}: ${err.message}`, { error: true }); }
+  }
+  if (last) { commit(); toast(files.length > 1 ? `${files.length} images added to your library` : 'Image added to your library'); }
+  return last;
+}
+
+function pickFiles(multiple = true) {
+  return new Promise((resolve) => {
+    const input = el('input', { type: 'file', accept: 'image/*', multiple });
+    input.addEventListener('change', () => resolve([...input.files]));
+    input.click();
+  });
+}
+
+function mediaTile(img, { onPick, onRemove } = {}) {
+  return el('div', { class: 'media-tile' },
+    el('button', { type: 'button', class: 'media-tile__img', title: onPick ? `Use ${img.name}` : img.name, style: `background-image:url("${String(siteAsset(img.src)).replace(/["\\]/g, encodeURIComponent)}")`, onclick: () => onPick?.(img.src) }),
+    el('span', { class: 'media-tile__name' }, img.name),
+    onRemove ? el('button', { type: 'button', class: 'media-tile__rm', title: 'Remove from library', onclick: onRemove }, ico('x')) : null);
+}
+
+async function mediaGrids(container, { onPick } = {}) {
+  const mine = siteImages();
+  container.replaceChildren(
+    el('p', { class: 'p-sub' }, `Your images (${mine.length})`),
+    mine.length ? el('div', { class: 'media-grid' }, mine.map((img) => mediaTile(img, { onPick,
+      onRemove: img.uploaded && !onPick ? () => {
+        const ref = img.id && JSON.stringify(state.doc.posts || []).includes(`media:${img.id}`);
+        if (ref) { toast('This image is used inside a blog post. Remove it from the post first.', { error: true }); return; }
+        state.doc.media = state.doc.media.filter((m) => m.src !== img.src); commit(); renderPanel();
+      } : null })))
+      : el('p', { class: 'p-hint' }, 'Upload photos of your work, team or logo to reuse them anywhere.'),
+    el('p', { class: 'p-sub' }, 'Built-in images'),
+    el('div', { class: 'media-grid' }, (await loadLibrary()).map((img) => mediaTile(img, { onPick }))));
+}
+
+function panelMedia(box) {
+  box.append(panelHead('Images', 'image', el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: async () => { await uploadFiles(await pickFiles()); renderPanel(); } }, ico('upload'), 'Upload')));
+  const body = el('div', { class: 'p-body' }, el('p', { class: 'p-hint' }, 'To place an image, select a section and press Library on any image setting. Uploads are resized automatically and saved to your site when you publish.'));
+  const grids = el('div');
+  body.append(grids);
+  box.append(body);
+  mediaGrids(grids);
+}
+
+function openMediaPicker(onPick) {
+  const grids = el('div');
+  const pick = (src) => { closeModal(); onPick(src); };
+  openModal('Choose an image', el('div', { class: 'picker' },
+    el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: async () => { const src = await uploadFiles(await pickFiles(false)); if (src) pick(src); } }, ico('upload'), 'Upload a new image'),
+    grids));
+  mediaGrids(grids, { onPick: pick });
+}
+
+// ---------------------------------------------------------------------------
+// History: saved versions (this browser), cloud drafts and published versions
+async function addVersion(name) {
+  await versions.add({ id: uid('v'), name, savedAt: Date.now(), json: JSON.stringify(state.doc) });
+  const all = await versions.list();
+  await Promise.all(all.slice(40).map((v) => versions.del(v.id)));
+}
+
+function restoreDoc(doc, message) {
+  if (!doc?.pages?.length || !doc.site) { toast('That version could not be read.', { error: true }); return; }
+  try { state.doc = migrate(doc); } catch (err) { toast(err.message, { error: true }); return; }
+  state.page = 0;
+  state.sel = null;
+  commit();
+  refreshAll();
+  toast(message, { action: 'Undo', onAction: undo });
+}
+
+const when = (d) => new Date(d).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+function histRow(title, date, actions) {
+  return el('div', { class: 'hist-row' },
+    el('div', { class: 'hist-row__txt' }, el('strong', {}, title), el('small', {}, when(date))),
+    el('div', { class: 'hist-row__actions' }, actions.map(([label, fn, cls]) => el('button', { type: 'button', class: `ed-btn ed-btn--sm${cls ? ` ${cls}` : ''}`, onclick: fn }, label))));
+}
+
+function panelHistory(box) {
+  box.append(panelHead('History', 'history'));
+  const body = el('div', { class: 'p-body' });
+
+  body.append(el('p', { class: 'p-sub' }, 'Saved versions'), el('p', { class: 'p-hint' }, 'Snapshots kept in this browser. One is saved automatically every time you publish.'),
+    el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: async () => {
+      const name = prompt('Name this version', `Version ${when(Date.now())}`);
+      if (name === null) return;
+      try { await addVersion(name.trim() || 'Untitled version'); toast('Version saved'); renderPanel(); } catch { toast('Could not save a version in this browser.', { error: true }); }
+    } }, ico('bookmark'), 'Save current version'));
+  const local = el('div', { class: 'hist' }, el('p', { class: 'p-hint' }, 'Loading…'));
+  body.append(local);
+  versions.list().then((vs) => local.replaceChildren(...(vs.length ? vs.map((v) => histRow(v.name, v.savedAt, [
+    ['Restore', () => confirm(`Restore “${v.name}”? Your current work can be brought back with Undo.`) && restoreDoc(JSON.parse(v.json), `Restored “${v.name}”`)],
+    ['Delete', async () => { await versions.del(v.id); renderPanel(); }, 'ed-btn--danger'],
+  ])) : [el('p', { class: 'p-hint' }, 'No saved versions yet.')]))).catch(() => local.replaceChildren(el('p', { class: 'p-hint' }, 'Saved versions are not available in this browser.')));
+
+  body.append(el('p', { class: 'p-sub' }, 'Cloud draft'), el('p', { class: 'p-hint' }, 'Save your unpublished work to GitHub and pick it up on another computer. Drafts live on a separate branch and never change the live site.'),
+    el('div', { class: 'f-row' },
+      el('button', { type: 'button', class: 'ed-btn', onclick: async (e) => {
+        const cfg = await needGH('Cloud drafts are stored in your GitHub repository.');
+        if (!cfg) return;
+        const b = e.currentTarget; b.disabled = true;
+        try { flushCommit(); await saveCloudDraft(cfg, state.doc); toast('Draft saved to the cloud'); } catch (err) { toast(err.message, { error: true }); } finally { b.disabled = false; }
+      } }, ico('upload'), 'Save'),
+      el('button', { type: 'button', class: 'ed-btn', onclick: async (e) => {
+        const cfg = await needGH('Cloud drafts are stored in your GitHub repository.');
+        if (!cfg) return;
+        const b = e.currentTarget; b.disabled = true;
+        try {
+          const d = await loadCloudDraft(cfg);
+          if (!d) toast('No cloud draft saved yet.');
+          else if (confirm(`Load the cloud draft saved ${when(d.savedAt)}? Your current work can be brought back with Undo.`)) restoreDoc(d.doc, 'Cloud draft loaded');
+        } catch (err) { toast(err.message, { error: true }); } finally { b.disabled = false; }
+      } }, ico('download'), 'Load')));
+
+  body.append(el('p', { class: 'p-sub' }, 'Published versions'));
+  const pub = el('div', { class: 'hist' });
+  const loadPublished = async (cfg) => {
+    pub.replaceChildren(el('p', { class: 'p-hint' }, 'Loading…'));
+    try {
+      const list = await listPublishedVersions(cfg);
+      pub.replaceChildren(...(list.length ? list.map((c) => histRow(c.message, c.date, [['Open', async () => {
+        if (!confirm('Load this published version into the editor? Nothing changes on the live site until you publish.')) return;
+        try { restoreDoc(await readPublishedVersion(cfg, c.sha), 'Published version loaded — publish to make it live again'); } catch (err) { toast(err.message, { error: true }); }
+      }]])) : [el('p', { class: 'p-hint' }, 'No published versions found.')]));
+    } catch (err) { pub.replaceChildren(el('p', { class: 'p-hint' }, err.message)); }
+  };
+  const cfg = currentGH();
+  if (cfg) loadPublished(cfg);
+  else pub.append(el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: async () => { const c = await needGH('Published versions are read from your GitHub repository.'); if (c) loadPublished(c); } }, ico('github'), 'Show published versions'));
+  body.append(pub);
+  box.append(body);
+}
+
+// ---------------------------------------------------------------------------
+// Find & replace across all pages and site settings
+const NON_TEXT = new Set(['id', 'type', 'icon', 'image', 'bgImage', 'logo', 'logoIcon', 'panelIcon', 'favicon', 'shareImage', 'href', 'link', 'src', 'bg', 'pad',
+  'layout', 'side', 'columns', 'style', 'ratio', 'width', 'height', 'align', 'overlay', 'anchor', 'headerStyle', 'formEndpoint', 'slug', 'url', 'kind', 'date', 'show', 'limit']);
+
+function eachText(fn) {
+  (function walk(node, key) {
+    if (Array.isArray(node)) node.forEach((n, i) => { if (typeof n === 'string') node[i] = fn(n) ?? n; else walk(n, key); });
+    else if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node)) {
+        if (typeof v === 'string') { if (!NON_TEXT.has(k) && !v.startsWith('data:')) node[k] = fn(v) ?? v; } else walk(v, k);
+      }
+    }
+  })({ site: state.doc.site, pages: state.doc.pages, posts: state.doc.posts }, '');
+}
+
+function openFindReplace() {
+  const find = el('input', { class: 'in', placeholder: 'Find…' });
+  const repl = el('input', { class: 'in', placeholder: 'Replace with…' });
+  const matchCase = el('input', { type: 'checkbox' });
+  const info = el('p', { class: 'p-hint', style: 'margin:0' }, 'Type something to search all pages.');
+  const go = el('button', { type: 'button', class: 'ed-btn ed-btn--primary', disabled: true }, ico('replace'), 'Replace all');
+  const rx = () => find.value && new RegExp(find.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), matchCase.checked ? 'g' : 'gi');
+  const count = () => {
+    const r = rx();
+    let n = 0;
+    if (r) eachText((v) => { n += (v.match(r) || []).length; });
+    info.textContent = !find.value ? 'Type something to search all pages.' : `${n} match${n === 1 ? '' : 'es'} found`;
+    go.disabled = !n;
+  };
+  find.addEventListener('input', count);
+  matchCase.addEventListener('change', count);
+  go.addEventListener('click', () => {
+    const r = rx();
+    if (!r) return;
+    let n = 0;
+    eachText((v) => v.replace(r, () => { n += 1; return repl.value; }));
+    commit(); refreshAll(); count();
+    toast(`Replaced ${n} match${n === 1 ? '' : 'es'}`, { action: 'Undo', onAction: undo });
+  });
+  openModal('Find & replace', el('div', {},
+    el('div', { class: 'f' }, el('label', {}, 'Find'), find),
+    el('div', { class: 'f' }, el('label', {}, 'Replace with'), repl),
+    el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Match case', matchCase)),
+    info,
+    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn', onclick: closeModal }, 'Close'), go)));
+  setTimeout(() => find.focus(), 50);
+}
+
+// ---------------------------------------------------------------------------
+// Modal, toasts, top bar
+function openModal(title, content) {
+  $('#modal-title').textContent = title;
+  $('#modal-body').replaceChildren(content);
+  $('#modal').hidden = false;
+  hydrateIcons($('#modal'));
+}
+function closeModal() { $('#modal').hidden = true; }
+$$('#modal [data-close]').forEach((n) => n.addEventListener('click', closeModal));
+
+function toast(text, { action, onAction, error = false } = {}) {
+  const t = el('div', { class: `toast${error ? ' is-err' : ''}` }, text);
+  if (action) t.append(el('button', { type: 'button', onclick: () => { onAction(); t.remove(); } }, action));
+  $('#toasts').append(t);
+  setTimeout(() => t.remove(), action ? 6000 : 3200);
+}
+
+function updateTopbar() {
+  $('#undo').disabled = !state.history.length;
+  $('#redo').disabled = !state.future.length;
+  const sel = $('#page-select');
+  sel.replaceChildren(...state.doc.pages.map((p, i) => el('option', { value: String(i), selected: i === state.page }, p.title)));
+  const dirty = state.snap !== state.published;
+  const st = $('#status');
+  st.textContent = dirty ? 'Draft saved · not published' : 'Published';
+  st.classList.toggle('is-dirty', dirty);
+}
+
+function setDevice(d) {
+  state.device = d;
+  $('#frame-wrap').dataset.device = d;
+  $$('#device-toggle button').forEach((b) => b.classList.toggle('is-on', b.dataset.device === d));
+}
+
+function refreshAll() {
+  if (state.post && !findPost(state.post)) state.post = null;
+  applyTheme();
+  renderCanvas();
+  renderPanel();
+  renderInspector();
+  updateTopbar();
+}
+
+function onGlobalKey(e) {
+  const mod = e.metaKey || e.ctrlKey;
+  const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
+  if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); flushCommit(); saveDraft(); toast('Draft saved'); return; }
+  if (inField) return;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+  else if (mod && e.key.toLowerCase() === 'd' && state.sel && !isChrome(state.sel)) { e.preventDefault(); runTool('duplicate', state.sel); }
+  else if (mod && e.key.toLowerCase() === 'c' && state.sel && !isChrome(state.sel) && !String(e.target.ownerDocument?.getSelection?.() || '')) { e.preventDefault(); copySection(state.sel); }
+  else if (mod && e.key.toLowerCase() === 'v' && getClipboard()) { e.preventDefault(); pasteSection(); }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && state.sel && !isChrome(state.sel)) { e.preventDefault(); runTool('delete', state.sel); }
+  else if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else select(null); }
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+async function boot() {
+  hydrateIcons();
+  $$('a[data-site-link]').forEach((a) => { a.href = `${SITE}/`; });
+  let published = null;
+  try { published = await fetchPublished(); } catch (e) { toast(e.message, { error: true }); }
+  let draft = null;
+  try {
+    const saved = await kv.get('draft');
+    if (saved?.json) draft = { doc: JSON.parse(saved.json) };
+  } catch { /* IndexedDB unavailable */ }
+  if (!draft) { try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { /* ignore */ } }
+  const safeMigrate = (d) => { try { return d ? migrate(d) : null; } catch (err) { toast(err.message, { error: true }); return null; } };
+  published = safeMigrate(published);
+  state.doc = safeMigrate(draft?.doc) || published;
+  if (!state.doc) return;
+  state.published = published ? JSON.stringify(published) : '';
+  state.snap = JSON.stringify(state.doc);
+
+  await initCanvas();
+  refreshAll();
+  if (draft?.doc && state.snap !== state.published) toast('Restored your unpublished draft', { action: 'Discard', onAction: resetToPublished });
+
+  $$('.ed-rail button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  $$('#device-toggle button').forEach((b) => b.addEventListener('click', () => setDevice(b.dataset.device)));
+  $('#undo').addEventListener('click', undo);
+  $('#redo').addEventListener('click', redo);
+  $('#page-select').addEventListener('change', (e) => goToPage(+e.target.value));
+  $('#publish').addEventListener('click', openPublish);
+  $('#preview').addEventListener('click', async () => { flushCommit(); await saveDraft(); const post = state.post && findPost(state.post);
+    window.open(`preview.html?path=${encodeURIComponent(post ? `/${POSTS_BASE}/${post.slug}/` : pageHref(page(), state.page))}`, '_blank'); });
+  $('#find').addEventListener('click', openFindReplace);
+  document.addEventListener('keydown', onGlobalKey);
+  addEventListener('beforeunload', () => flushCommit());
+}
+
+boot();

@@ -1,0 +1,16 @@
+{
+  "name": "rts-editor",
+  "private": true,
+  "description": "Standalone visual editor for roetechnologyservices.com. No runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "configure": "node scripts/configure.mjs",
+    "check": "node scripts/configure.mjs --check",
+    "test": "node --test \"tests/unit/**/*.test.js\"",
+    "test:e2e": "node --test --test-concurrency=1 \"tests/e2e/**/*.test.js\"",
+    "serve": "npx --yes http-server@14 -p 8081 -c-1 ."
+  }
+}

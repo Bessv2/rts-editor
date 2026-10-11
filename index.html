@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://roetechnologyservices.com; style-src 'self' 'unsafe-inline' https://roetechnologyservices.com https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https: https://roetechnologyservices.com; connect-src 'self' https://api.github.com https://roetechnologyservices.com; frame-src 'self'; base-uri 'self' https://roetechnologyservices.com; object-src 'none'; form-action 'self'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Site Editor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111827'/%3E%3Cpath d='M9 22l3-1 9-9-2-2-9 9zM18 9l2-2 3 3-2 2' stroke='white' stroke-width='2' fill='none' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="assets/css/editor.css">
+  <script type="module" src="assets/js/editor.js"></script>
+</head>
+<body>
+  <div class="ed" id="ed">
+    <header class="ed-top">
+      <div class="ed-top__left">
+        <a class="ed-logo" href="#" data-site-link target="_blank" rel="noopener" title="View live site"><span class="ed-logo__mark" data-icon="sparkle"></span><span>Site Editor</span></a>
+        <span class="ed-sep"></span>
+        <label class="ed-page-pick"><span data-icon="file"></span><select id="page-select" aria-label="Current page"></select></label>
+      </div>
+      <div class="ed-top__center">
+        <div class="ed-seg" id="device-toggle" role="group" aria-label="Preview size">
+          <button type="button" data-device="desktop" title="Desktop" class="is-on"><span data-icon="monitor"></span></button>
+          <button type="button" data-device="tablet" title="Tablet"><span data-icon="tablet"></span></button>
+          <button type="button" data-device="mobile" title="Mobile"><span data-icon="smartphone"></span></button>
+        </div>
+      </div>
+      <div class="ed-top__right">
+        <span class="ed-status" id="status"></span>
+        <button type="button" class="ed-icon-btn" id="find" title="Find &amp; replace"><span data-icon="search"></span></button>
+        <button type="button" class="ed-icon-btn" id="undo" title="Undo (Ctrl+Z)"><span data-icon="undo"></span></button>
+        <button type="button" class="ed-icon-btn" id="redo" title="Redo (Ctrl+Shift+Z)"><span data-icon="redo"></span></button>
+        <button type="button" class="ed-btn" id="preview"><span data-icon="eye"></span>Preview</button>
+        <button type="button" class="ed-btn ed-btn--primary" id="publish"><span data-icon="send"></span>Publish</button>
+      </div>
+    </header>
+
+    <nav class="ed-rail" aria-label="Editor panels">
+      <button type="button" data-tab="add" class="is-on"><span data-icon="plus"></span><small>Add</small></button>
+      <button type="button" data-tab="layers"><span data-icon="layers"></span><small>Layers</small></button>
+      <button type="button" data-tab="pages"><span data-icon="file"></span><small>Pages</small></button>
+      <button type="button" data-tab="blog"><span data-icon="pen"></span><small>Blog</small></button>
+      <button type="button" data-tab="media"><span data-icon="image"></span><small>Images</small></button>
+      <button type="button" data-tab="theme"><span data-icon="droplet"></span><small>Design</small></button>
+      <button type="button" data-tab="site"><span data-icon="sliders"></span><small>Settings</small></button>
+      <button type="button" data-tab="history"><span data-icon="history"></span><small>History</small></button>
+      <button type="button" data-tab="help" class="ed-rail__end"><span data-icon="help"></span><small>Help</small></button>
+    </nav>
+
+    <aside class="ed-panel" id="panel" aria-live="polite"></aside>
+
+    <main class="ed-stage" id="stage">
+      <div class="ed-frame" id="frame-wrap" data-device="desktop">
+        <iframe id="canvas" title="Page canvas"></iframe>
+      </div>
+    </main>
+
+    <aside class="ed-inspector" id="inspector"></aside>
+  </div>
+
+  <div class="ed-modal" id="modal" hidden>
+    <div class="ed-modal__backdrop" data-close></div>
+    <div class="ed-modal__card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <header><h2 id="modal-title"></h2><button type="button" class="ed-icon-btn" data-close title="Close"><span data-icon="x"></span></button></header>
+      <div class="ed-modal__body" id="modal-body"></div>
+    </div>
+  </div>
+  <div class="ed-toasts" id="toasts" aria-live="polite"></div>
+  <div class="ed-small-screen">
+    <div><h2>The editor needs a bigger screen</h2><p>Open this page on a laptop or desktop for the best experience.</p><a class="ed-btn ed-btn--primary" href="#" data-site-link>View the site</a></div>
+  </div>
+</body>
+</html>
