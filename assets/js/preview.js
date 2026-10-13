@@ -7,14 +7,11 @@ let theme;
 try { theme = await loadTheme(); } catch (err) { showFatal(err.message); throw err; }
 const { migrate, findRoute, renderPage, renderPostPage, renderNotFound, postTitle, themeCSS, fontsHref, enhance } = theme;
 
-// Site-relative images and links resolve against the live site.
+// Site-relative images and links resolve against the live site. (The site's
+// stylesheet is linked in preview.html, before the theme variables set below.)
 const base = document.createElement('base');
 base.href = `${SITE}/`;
 document.head.prepend(base);
-const css = document.createElement('link');
-css.rel = 'stylesheet';
-css.href = `${SITE}/assets/css/site.css`;
-document.head.append(css);
 
 async function loadDraft() {
   try {
@@ -33,8 +30,11 @@ if (fonts) document.getElementById('theme-fonts').setAttribute('href', fonts);
 
 // Absolute URL: the <base> above points at the site, but history must stay on the editor's origin.
 const editorUrl = (path) => `${location.origin}${location.pathname}?path=${encodeURIComponent(path)}`;
-function show(path, push = false) {
-  const route = findRoute(doc, path);
+function show(path, push = false, hops = 0) {
+  // Unpublished pages and posts can be previewed too; redirects are followed like the live site would.
+  const route = findRoute(doc, path, { drafts: true });
+  if (route?.type === 'redirect' && route.to.startsWith('/') && hops < 5) { show(route.to, push, hops + 1); return; }
+  if (route?.type === 'redirect') { location.href = route.to; return; }
   if (route?.type === 'post') {
     app.innerHTML = renderPostPage(doc, route.post);
     document.title = `Preview: ${postTitle(route.post)}`;

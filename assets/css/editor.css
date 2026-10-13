@@ -302,3 +302,10 @@ kbd { font: 600 11px ui-monospace, monospace; padding: 2px 6px; border-radius: 5
 .ed-fatal { display: grid; place-content: center; justify-items: center; gap: 14px; min-height: 100vh; padding: 24px; text-align: center; background: var(--e-bg); }
 .ed-fatal h1 { margin: 0; font-size: 22px; }
 .ed-fatal p { margin: 0; max-width: 520px; color: var(--e-muted); }
+
+/* Redirects (Settings) */
+.redirects { display: grid; gap: 6px; margin-bottom: 8px; }
+.redirect-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--e-line); border-radius: 8px; font-size: 12px; }
+.redirect-row__txt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.redirect-row code { font-size: 11px; }
+.redirect-add { margin-bottom: 6px; }

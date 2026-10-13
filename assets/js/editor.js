@@ -23,6 +23,9 @@ const {
   getPath, setPath, esc, pageHref, rich, THEME_PRESETS, FONTS, icon, ICON_NAMES, SOCIAL, migrate, validate, POSTS_BASE, buildSite, staleFiles, safeSrc,
 } = theme;
 const siteAsset = (src) => toSiteAsset(src, safeSrc);
+// Optional capabilities: older site themes don't have them, so each is checked before use.
+const has = (feature) => Array.isArray(theme.FEATURES) && theme.FEATURES.includes(feature);
+const anchorId = theme.anchorId || ((v) => String(v || '').replace(/^#/, '').replace(/[^\w-]/g, ''));
 
 const DRAFT_KEY = 'rts-editor-draft';
 const GH_KEY = 'rts-editor-github';
@@ -476,9 +479,14 @@ function linkSuggestions() {
   let dl = $('#link-suggest');
   if (!dl) { dl = el('datalist', { id: 'link-suggest' }); document.body.append(dl); }
   const opts = [];
-  state.doc.pages.forEach((p, i) => opts.push([pageHref(p, i), `Page: ${p.title}`]));
+  state.doc.pages.forEach((p, i) => opts.push([pageHref(p, i), `Page: ${p.title}${p.draft && i > 0 ? ' (unpublished)' : ''}`]));
   (state.doc.posts || []).forEach((p) => opts.push([`/${POSTS_BASE}/${p.slug}/`, `Post: ${postTitle(p)}`]));
-  state.doc.pages.forEach((p) => p.sections.forEach((s) => s.data?.anchor && opts.push([`#${s.data.anchor}`, `Section on current page: ${s.data.anchor}`])));
+  state.doc.pages.forEach((p, i) => p.sections.forEach((s) => {
+    const id = anchorId(s.data?.anchor);
+    if (!id) return;
+    if (i === state.page) opts.push([`#${id}`, `Section on this page: ${id}`]);
+    else opts.push([`${pageHref(p, i)}#${id}`, `Section on ${p.title}: ${id}`]);
+  }));
   if (state.doc.site.email) opts.push([`mailto:${state.doc.site.email}`, 'Email']);
   if (state.doc.site.phone) opts.push([`tel:${state.doc.site.phone.replace(/[^+\d]/g, '')}`, 'Phone']);
   dl.replaceChildren(...[...new Map(opts)].map(([v, l]) => el('option', { value: v, label: l })));
@@ -577,7 +585,7 @@ function fieldControl(f, path, val, change, target, onRender) {
       const b = val || {};
       const lbl = el('input', { class: 'in', type: 'text', placeholder: 'Button text (empty = hidden)', value: b.label || '', 'data-path': `${path}.label`,
         oninput: (e) => change(`${path}.label`, e.target.value, { soon: true }) });
-      const url = el('input', { class: 'in', type: 'text', placeholder: 'Link: #/contact, https://…', value: b.href || '', list: linkSuggestions(),
+      const url = el('input', { class: 'in', type: 'text', placeholder: 'Link: /contact/, #section, https://…', value: b.href || '', list: linkSuggestions(),
         oninput: (e) => change(`${path}.href`, e.target.value, { soon: true }) });
       put(wrap, el('span', { class: 'f__label' }, f.label), el('div', { class: 'f-btn' }, lbl, el('div', { class: 'f-btn__url' }, ico('link'), url)), help);
       return wrap;
@@ -816,21 +824,32 @@ function panelPages(box) {
     const item = el('div', { class: `page-item${cur ? ' is-current' : ''}` },
       el('div', { class: 'page-item__row', onclick: (e) => { if (!e.target.closest('button') && !cur) goToPage(i); } },
         ico(i === 0 ? 'home' : 'file'), el('strong', {}, p.title), el('small', {}, i === 0 ? '/' : `/${p.slug}`),
-        p.showInNav === false ? el('span', { class: 'badge' }, 'Hidden') : null));
+        i > 0 && p.draft ? el('span', { class: 'badge' }, 'Unpublished') : p.showInNav === false ? el('span', { class: 'badge' }, 'Not in menu') : null));
     if (cur) {
       const b = el('div', { class: 'page-item__body' });
       const upd = (rerender = true) => { commitSoon(); if (rerender) renderCanvas(); updateTopbar(); };
       b.append(
         el('div', { class: 'f', style: 'margin-top:10px' }, el('label', {}, 'Page name'), el('input', { class: 'in', value: p.title, oninput: (e) => {
-          const auto = p.slug === slugify(p.title);
+          // Once a page is live, renaming it no longer changes its address.
+          const auto = p.slug === slugify(p.title) && !publishedPath('page', p.id);
           p.title = e.target.value;
           if (i > 0 && auto) { p.slug = slugify(p.title); const sl = $('.page-slug', b); if (sl) sl.value = p.slug; }
           upd();
         } })),
         i > 0 ? el('div', { class: 'f' }, el('label', {}, 'Web address (yoursite.com/…/)'), el('input', { class: 'in page-slug', value: p.slug, oninput: (e) => { p.slug = slugify(e.target.value) || `page-${i}`; upd(); },
-          onchange: (e) => { e.target.value = p.slug; renderPanel(); } })) : null,
+          onchange: (e) => { e.target.value = p.slug; keepOldAddress('page', p.id, pageHref(p, i)); commit(); renderPanel(); } }),
+        has('redirects') && publishedPath('page', p.id) ? el('p', { class: 'f__help' }, 'This page is live. If you change its address, visitors using the old one are sent here automatically.') : null) : null,
+        i > 0 && has('page-drafts') ? el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Show on website', el('input', { type: 'checkbox', checked: !p.draft, onchange: (e) => {
+          if (e.target.checked) delete p.draft; else p.draft = true;
+          commit(); renderCanvas(); renderPanel(); updateTopbar();
+          toast(p.draft ? `“${p.title}” will be taken off your site when you publish` : `“${p.title}” will go live when you publish`);
+        } })), el('p', { class: 'f__help' }, NOT_SECRET)) : null,
         el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Show in navigation', el('input', { type: 'checkbox', checked: p.showInNav !== false, onchange: (e) => { p.showInNav = e.target.checked; commit(); renderCanvas(); renderPanel(); } }))),
         el('p', { class: 'p-sub' }, 'Search engines'),
+        has('noindex') ? el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Hide from search engines', el('input', { type: 'checkbox', checked: !!p.noindex, onchange: (e) => {
+          if (e.target.checked) p.noindex = true; else delete p.noindex;
+          commit(); renderPanel();
+        } })), el('p', { class: 'f__help' }, i === 0 && p.noindex ? 'Your home page won’t appear in Google and other search engines.' : 'The page stays on your site, but Google and others are asked not to list it.')) : null,
         el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); } })),
         el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); } }), { value: p.seoDescription || '' })),
         el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
@@ -844,6 +863,55 @@ function panelPages(box) {
   });
   body.append(list);
   box.append(body);
+}
+
+const NOT_SECRET = 'Hidden from visitors, but not secret: your site’s files are public on GitHub, so don’t put anything private here.';
+
+// The address a page or post has on the live site right now ('' if it isn't live).
+let publishedCache = { json: null, doc: null };
+function publishedDoc() {
+  if (publishedCache.json !== state.published) {
+    let doc = null;
+    try { doc = state.published ? JSON.parse(state.published) : null; } catch { doc = null; }
+    publishedCache = { json: state.published, doc };
+  }
+  return publishedCache.doc;
+}
+function publishedPath(kind, id) {
+  const pub = publishedDoc();
+  if (!pub) return '';
+  if (kind === 'page') {
+    const i = pub.pages.findIndex((x) => x.id === id);
+    return i > 0 && !pub.pages[i].draft && pub.pages[i].slug ? `/${pub.pages[i].slug}/` : '';
+  }
+  const post = (pub.posts || []).find((x) => x.id === id);
+  return post && post.published !== false && post.slug ? `/${POSTS_BASE}/${post.slug}/` : '';
+}
+
+// After a live page or post gets a new address, send visitors (and old
+// redirects) from the published address to the new one.
+// Returns the old address when a new redirect was added.
+function keepOldAddress(kind, id, newPath, { quiet = false } = {}) {
+  if (!has('redirects')) return '';
+  const old = publishedPath(kind, id);
+  if (!old) return '';
+  const list = (state.doc.redirects ||= []);
+  for (const r of list) if (theme.redirectTo(r.to) === old) r.to = newPath;
+  const from = theme.redirectFrom(old);
+  const at = list.findIndex((r) => theme.redirectFrom(r.from) === from);
+  if (old === newPath) { if (at >= 0) list.splice(at, 1); return ''; }
+  if (at >= 0) { list[at].to = newPath; return ''; }
+  list.push({ from: old, to: newPath });
+  if (!quiet) toast(`Visitors to ${old} will be sent to ${newPath}. Manage this in Settings → Redirects.`);
+  return old;
+}
+
+// Before publishing: every live page or post whose address changed keeps its old one working.
+function keepAllOldAddresses() {
+  const moved = [];
+  state.doc.pages.forEach((p, i) => { if (i > 0) { const old = keepOldAddress('page', p.id, pageHref(p, i), { quiet: true }); if (old) moved.push([old, pageHref(p, i)]); } });
+  (state.doc.posts || []).forEach((p) => { const to = `/${POSTS_BASE}/${p.slug}/`; const old = keepOldAddress('post', p.id, to, { quiet: true }); if (old) moved.push([old, to]); });
+  return moved;
 }
 
 function uniqueSlug(base) {
@@ -983,6 +1051,7 @@ function panelSite(box) {
     { key: 'favicon', label: 'Browser tab icon', type: 'image', help: 'A square image, at least 64×64.' },
     { key: 'shareImage', label: 'Share image', type: 'image', help: 'Shown when your site is shared on social media or messages. 1200×630 works best.' },
   ], s, () => {}, '', renderPanel);
+  if (has('redirects')) panelRedirects(body);
   body.append(el('p', { class: 'p-sub' }, 'Header & footer'),
     el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: () => select('__header', { scroll: true }) }, ico('layout'), 'Edit header & footer'));
   body.append(el('p', { class: 'p-sub' }, 'Backup'),
@@ -991,6 +1060,27 @@ function panelSite(box) {
       el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: importJSON }, ico('upload'), 'Restore from file'),
       el('button', { type: 'button', class: 'ed-btn ed-btn--block ed-btn--danger', onclick: resetToPublished }, ico('refresh'), 'Discard draft (load live version)')));
   box.append(body);
+}
+
+function panelRedirects(body) {
+  const list = (state.doc.redirects ||= []);
+  body.append(el('p', { class: 'p-sub' }, 'Redirects'), el('p', { class: 'p-hint' }, 'Send visitors from an old address to a new one. Added automatically when you change the address of a live page or post.'));
+  if (list.length) {
+    body.append(el('div', { class: 'redirects' }, list.map((r, i) => el('div', { class: 'redirect-row' },
+      el('span', { class: 'redirect-row__txt' }, el('code', {}, r.from), ' → ', el('code', {}, r.to)),
+      el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Remove redirect', onclick: () => { list.splice(i, 1); commit(); renderPanel(); } }, ico('trash'))))));
+  }
+  const from = el('input', { class: 'in', placeholder: 'Old address, e.g. /old-page/' });
+  const to = el('input', { class: 'in', placeholder: 'New address, e.g. /services/', list: linkSuggestions() });
+  const add = () => {
+    const f = theme.redirectFrom(from.value);
+    if (!f) { toast('Use an old address like /old-page/ or /blog/old-post/.', { error: true }); return; }
+    if (!to.value.trim()) { toast('Enter the new address.', { error: true }); return; }
+    if (list.some((r) => theme.redirectFrom(r.from) === f)) { toast(`There is already a redirect from /${f}/.`, { error: true }); return; }
+    list.push({ from: `/${f}/`, to: theme.redirectTo(to.value) });
+    commit(); renderPanel();
+  };
+  body.append(el('div', { class: 'f-row redirect-add' }, from, to), el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: add }, ico('plus'), 'Add redirect'));
 }
 
 function panelHelp(box) {
@@ -1074,10 +1164,13 @@ function openPublish() {
     const cfg = { owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', token: token.value.trim() };
     if (!cfg.owner || !cfg.repo || !cfg.token) { write('Fill in repository and token first.', 'err'); return; }
     rememberGH(cfg, remember.checked);
+    const moved = keepAllOldAddresses();
+    if (moved.length) commit();
     const problems = validate(state.doc);
     if (problems.length) { log.replaceChildren(); problems.forEach((pr) => write(pr, 'err')); write('Fix these, then publish again.', 'err'); return; }
     go.disabled = true;
     log.replaceChildren();
+    for (const [from, to] of moved) write(`${from} now forwards to ${to}.`);
     try {
       const r = await publishToGitHub({ ...cfg, message: msg.value.trim() || 'Update site content', doc: state.doc, log: write, origin: SITE, buildSite, staleFiles });
       state.published = JSON.stringify(state.doc);
@@ -1243,7 +1336,7 @@ function panelPostEditor(box, p) {
   const body = el('div', { class: 'p-body' });
   const preview = () => renderCanvas();
   const autoSlug = () => {
-    if (!blurb && !p.slugLocked) {
+    if (!blurb && !p.slugLocked && !publishedPath('post', p.id)) {
       p.slug = uniquePostSlug(slugify(postTitle(p)) || 'post', p.id);
       const input = $('#panel [data-path="slug"]');
       if (input && document.activeElement !== input) input.value = p.slug;
@@ -1252,7 +1345,7 @@ function panelPostEditor(box, p) {
   };
   renderFields(body, [
     { key: 'kind', label: 'Type', type: 'segmented', options: [['post', 'Post'], ['blurb', 'Blurb']] },
-    { key: 'published', label: 'Show on website', type: 'toggle', help: 'Turn off to keep this as a private draft.' },
+    { key: 'published', label: 'Show on website', type: 'toggle', help: `Turn off to keep working on it without it appearing on your site. ${NOT_SECRET}` },
   ], p, preview, '', renderPanel);
   renderFields(body, [{ key: 'title', label: blurb ? 'Title (optional)' : 'Title', type: 'text' }], p, autoSlug, '', renderPanel);
   renderFields(body, [
@@ -1269,7 +1362,9 @@ function panelPostEditor(box, p) {
     ]),
   ], p, preview, '', renderPanel);
   if (!blurb) {
-    renderFields(body, [{ key: 'slug', label: 'Web address', type: 'text', help: `The end of this post’s link (yoursite.com/${POSTS_BASE}/…/). Changing it breaks links people already shared.` }], p, () => {
+    renderFields(body, [{ key: 'slug', label: 'Web address', type: 'text', help: has('redirects')
+      ? `The end of this post’s link (yoursite.com/${POSTS_BASE}/…/). If the post is already live, visitors using the old link are sent to the new one.`
+      : `The end of this post’s link (yoursite.com/${POSTS_BASE}/…/). Changing it breaks links people already shared.` }], p, () => {
       p.slug = uniquePostSlug(slugify(p.slug) || 'post', p.id);
       p.slugLocked = true;
       preview();
@@ -1519,7 +1614,7 @@ function updateTopbar() {
   $('#undo').disabled = !state.history.length;
   $('#redo').disabled = !state.future.length;
   const sel = $('#page-select');
-  sel.replaceChildren(...state.doc.pages.map((p, i) => el('option', { value: String(i), selected: i === state.page }, p.title)));
+  sel.replaceChildren(...state.doc.pages.map((p, i) => el('option', { value: String(i), selected: i === state.page }, `${p.title}${i > 0 && p.draft ? ' (unpublished)' : ''}`)));
   const dirty = state.snap !== state.published;
   const st = $('#status');
   st.textContent = dirty ? 'Draft saved · not published' : 'Published';

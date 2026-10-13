@@ -48,8 +48,13 @@ export const CONFIG = ${JSON.stringify({ siteUrl: origin, repo: { owner, name, b
 `);
 for (const [file, preview] of [['index.html', false], ['preview.html', true]]) {
   const html = await readFile(join(root, file), 'utf8');
-  const next = html.replace(/(<meta http-equiv="Content-Security-Policy" content=")[^"]*(")/, `$1${csp(origin, { preview })}$2`);
+  let next = html.replace(/(<meta http-equiv="Content-Security-Policy" content=")[^"]*(")/, `$1${csp(origin, { preview })}$2`);
   if (next === html && !html.includes(csp(origin, { preview }))) throw new Error(`${file} has no CSP meta tag`);
+  if (preview) {
+    // The site's stylesheet must load before the draft's theme variables, or its defaults win.
+    if (!/<link id="site-css"[^>]*>\s*<style id="theme-vars">/.test(next)) throw new Error('preview.html needs <link id="site-css"> right before <style id="theme-vars">');
+    next = next.replace(/(<link id="site-css" rel="stylesheet" href=")[^"]*(")/, `$1${origin}/assets/css/site.css$2`);
+  }
   files.set(file, next);
 }
 if (config.editorDomain && !opt('--site')) files.set('CNAME', `${config.editorDomain}\n`);
