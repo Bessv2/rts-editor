@@ -22,6 +22,17 @@ function styleOf(el) {
 
 const isWordListPara = (el) => /MsoListParagraph/i.test(el.className || '') || /mso-list\s*:\s*l\d/i.test(el.getAttribute?.('style') || '');
 
+// Removes inline event handlers (onerror=, onload=, …) and javascript: links from every tag before
+// the browser parses the markup. The parsed copy is inert anyway; this keeps
+// the browser from even seeing a handler (newer Chrome reports them to the
+// page's security policy as soon as they are parsed).
+const TAG = /<[a-zA-Z][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/g;
+const HANDLER = /([\s/"'])on[a-z][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+)/gi;
+const SCRIPT_URL = /([\s/"'])((?:xlink:)?href|src|action|formaction)\s*=\s*(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*'|javascript:[^\s"'>]*)/gi;
+export function stripHandlers(html) {
+  return String(html || '').replace(TAG, (tag) => tag.replace(HANDLER, '$1').replace(SCRIPT_URL, '$1'));
+}
+
 function safeLink(href) {
   const h = String(href || '').trim();
   return /^(https?:|mailto:|tel:|\/|#)/i.test(h) ? h : '';
@@ -29,7 +40,7 @@ function safeLink(href) {
 
 export function htmlToMarkdown(html) {
   const tpl = document.createElement('template');
-  tpl.innerHTML = String(html || '');
+  tpl.innerHTML = stripHandlers(html);
   const blocks = [];
   let line = '';
 

@@ -2,7 +2,7 @@
 import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft, gitBlobSha, PublishCancelled, codeChangedSince } from './publish.js';
 import { kv, versions } from './store.js';
 import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
-import { htmlToMarkdown, hasFormatting } from './html-to-md.js';
+import { htmlToMarkdown, hasFormatting, stripHandlers } from './html-to-md.js';
 
 // Refuse to run inside another site's frame (clickjacking protection;
 // GitHub Pages can't send X-Frame-Options headers).
@@ -716,7 +716,7 @@ function fieldControl(f, path, val, change, target, onRender) {
 // <template>, whose contents are inert (nothing loads, no handler runs).
 function cleanSVG(text) {
   const tpl = document.createElement('template');
-  tpl.innerHTML = text;
+  tpl.innerHTML = stripHandlers(text);
   const svg = tpl.content.querySelector('svg');
   if (!svg) throw new Error('That SVG file could not be read.');
   svg.querySelectorAll('script, foreignObject, iframe, embed, object, audio, video, set, animate[attributeName*="href" i]').forEach((n) => n.remove());
