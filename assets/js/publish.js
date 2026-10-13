@@ -140,6 +140,14 @@ export async function publishToGitHub({ owner, repo, branch, token, message, doc
   return { commitUrl: commit.html_url, published: out, contentSha: content.sha };
 }
 
+// True when the site's code (assets/js) changed on the branch after `since`,
+// i.e. this editor tab may be building pages with an older copy of it.
+export async function codeChangedSince(cfg, since) {
+  const api = createApi(cfg);
+  const list = await api(`/commits?sha=${encodeURIComponent(cfg.branch)}&path=assets/js&since=${since.toISOString()}&per_page=1`, { allow404: true });
+  return Array.isArray(list) && list.length > 0;
+}
+
 // Past published versions of the site content.
 export async function listPublishedVersions(cfg, limit = 25) {
   const api = createApi(cfg);

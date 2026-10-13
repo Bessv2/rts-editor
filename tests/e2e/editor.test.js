@@ -131,6 +131,10 @@ test('editor loads the theme and content from the site and publishes a full buil
   assert.ok(vars[1].includes(headingFont), `preview uses the draft heading font (${vars[1]})`);
   await preview.click('.nav__list a:has-text("Services")');
   assert.ok(preview.url().startsWith(editorUrl) && /path=%2Fservices%2F/.test(preview.url()), preview.url());
+  // In-page links stay in the preview even though <base> points at the site
+  await preview.evaluate(() => document.querySelector('.skip-link').click());
+  await preview.waitForTimeout(200);
+  assert.ok(preview.url().startsWith(editorUrl), `skip link stays in the preview: ${preview.url()}`);
 
   // Publish builds every page with the site's builder
   await publish(p);
@@ -364,6 +368,47 @@ test('the editor remembers where you were and notices drafts that went stale', a
   assert.match(new URL(p.url()).hash, /^#post=/);
   await p.reload({ waitUntil: 'load' });
   await p.locator('#panel h2', { hasText: /Edit (post|blurb)/ }).waitFor();
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('drafts and settings stay with their site; uploaded SVGs are cleaned', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  await p.evaluate(() => new Promise((resolve) => {
+    localStorage.setItem('rts-editor-github', JSON.stringify({ owner: 'someone', repo: 'other', branch: 'dev', token: '', site: 'https://other.example|someone/other' }));
+    const req = indexedDB.open('rts-editor', 1);
+    req.onsuccess = () => {
+      const tx = req.result.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put({ savedAt: Date.now(), json: JSON.stringify({ site: { name: 'Other site' }, pages: [{ title: 'Other home', sections: [] }] }), site: 'https://other.example|someone/other' }, 'draft');
+      tx.oncomplete = resolve;
+    };
+  }));
+  await p.reload({ waitUntil: 'load' });
+  await p.locator('.toast', { hasText: 'draft for another site (https://other.example) was set aside' }).waitFor();
+  assert.notEqual(await p.locator('#page-select option').first().innerText(), 'Other home', 'the other site’s draft is not loaded');
+  await p.click('#publish');
+  assert.equal(await p.locator('.ed-modal input[placeholder="GitHub user"]').inputValue(), 'Bessv2', 'another site’s repository is not used');
+  await p.click('.ed-modal__card header [data-close]');
+
+  // SVG uploads keep the drawing but lose scripts and event handlers
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10" onload="alert(1)"><script>alert(2)</script>'
+    + '<a xlink:href="javascript:alert(3)"><rect width="10" height="10" fill="#2563eb"/></a><foreignObject><div>x</div></foreignObject></svg>';
+  await p.click('.ed-rail button[data-tab="media"]');
+  const [chooser] = await Promise.all([p.waitForEvent('filechooser'), p.click('.p-head button:has-text("Upload")')]);
+  await chooser.setFiles({ name: 'logo.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg) });
+  await p.locator('.ed-panel .media-grid').first().locator('.media-tile').first().waitFor();
+  await p.waitForTimeout(300);
+  const stored = await p.evaluate(() => new Promise((resolve) => {
+    const req = indexedDB.open('rts-editor', 1);
+    req.onsuccess = () => { const g = req.result.transaction('kv').objectStore('kv').get('draft'); g.onsuccess = () => resolve(g.result.json); };
+  }));
+  const src = JSON.parse(stored).media.find((m) => m.name === 'logo.svg').src;
+  const clean = Buffer.from(src.split(',')[1], 'base64').toString();
+  assert.match(clean, /<rect/);
+  assert.doesNotMatch(clean, /script|onload|javascript:|foreignObject/i);
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });

@@ -8,7 +8,7 @@
 //   node scripts/configure.mjs           apply editor.config.json
 //   node scripts/configure.mjs --check   exit 1 if generated files are out of sync
 //   node scripts/configure.mjs --site URL [--out DIR]   (used by tests)
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, rm, access } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,14 +57,19 @@ for (const [file, preview] of [['index.html', false], ['preview.html', true]]) {
   }
   files.set(file, next);
 }
-if (config.editorDomain && !opt('--site')) files.set('CNAME', `${config.editorDomain}\n`);
+const wantCname = config.editorDomain && !opt('--site');
+if (wantCname) files.set('CNAME', `${config.editorDomain}\n`);
+// Without an editorDomain the editor is served from GitHub's own address, so an old CNAME must go.
+const staleCname = !wantCname && !opt('--site') && await access(join(root, 'CNAME')).then(() => true, () => false);
 
 if (check) {
   const stale = [];
   for (const [file, content] of files) if ((await readFile(join(root, file), 'utf8').catch(() => '')) !== content) stale.push(file);
+  if (staleCname) stale.push('CNAME (no editorDomain set)');
   if (stale.length) { console.error(`Out of sync with editor.config.json: ${stale.join(', ')}\nRun: node scripts/configure.mjs`); process.exit(1); }
   console.log('Configuration is in sync.');
 } else {
   for (const [file, content] of files) await writeFile(join(outDir, file), content);
+  if (staleCname) await rm(join(root, 'CNAME'), { force: true });
   console.log(`Editor configured for ${origin} (${owner}/${name}@${branch})${outDir !== root ? ` in ${outDir}` : ''}.`);
 }

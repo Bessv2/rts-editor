@@ -1,5 +1,5 @@
 // Visual site editor. Edits content/site.json through a live canvas.
-import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft, gitBlobSha, PublishCancelled } from './publish.js';
+import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft, gitBlobSha, PublishCancelled, codeChangedSince } from './publish.js';
 import { kv, versions } from './store.js';
 import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
 import { htmlToMarkdown, hasFormatting } from './html-to-md.js';
@@ -32,6 +32,9 @@ const DRAFT_KEY = 'rts-editor-draft';
 const GH_KEY = 'rts-editor-github';
 const CLIP_KEY = 'rts-editor-clipboard';
 const DEFAULT_REPO = { owner: CONFIG.repo.owner, repo: CONFIG.repo.name, branch: CONFIG.repo.branch };
+// Drafts, versions and GitHub settings belong to one site, in case the editor is pointed at another.
+const SITE_KEY = `${SITE}|${CONFIG.repo.owner}/${CONFIG.repo.name}`;
+const OPENED_AT = new Date();
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -101,7 +104,7 @@ function flushCommit() { if (state.commitTimer) commit(); }
 
 function saveDraft(s = JSON.stringify(state.doc)) {
   try { localStorage.removeItem(DRAFT_KEY); } catch { /* legacy draft location */ }
-  const p = s === state.published ? kv.del('draft') : kv.set('draft', { savedAt: Date.now(), json: s, base: state.base });
+  const p = s === state.published ? kv.del('draft') : kv.set('draft', { savedAt: Date.now(), json: s, base: state.base, site: SITE_KEY });
   return p.catch(() => toast('Could not save your draft in this browser. Publish or download a backup to keep your work.', { error: true }));
 }
 
@@ -708,12 +711,32 @@ function fieldControl(f, path, val, change, target, onRender) {
   }
 }
 
-// Resize uploads so drafts stay small; SVGs are kept as-is.
+// SVG files can carry scripts that would run on the site when the file is
+// opened directly, so only the drawing is kept.
+function cleanSVG(text) {
+  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+  if (doc.querySelector('parsererror') || doc.documentElement.localName !== 'svg') throw new Error('That SVG file could not be read.');
+  doc.querySelectorAll('script, foreignObject, iframe, embed, object, audio, video, set, animate[attributeName*="href" i]').forEach((n) => n.remove());
+  for (const n of doc.querySelectorAll('*')) {
+    for (const a of [...n.attributes]) {
+      const name = a.name.toLowerCase();
+      const v = a.value.trim().toLowerCase();
+      if (name.startsWith('on') || ((name === 'href' || name.endsWith(':href')) && !v.startsWith('#') && !v.startsWith('data:image/'))) n.removeAttribute(a.name);
+    }
+  }
+  const svg = new XMLSerializer().serializeToString(doc);
+  const bytes = new TextEncoder().encode(svg);
+  let bin = '';
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return `data:image/svg+xml;base64,${btoa(bin)}`;
+}
+
+// Resize uploads so drafts stay small; SVGs are cleaned but keep their size.
 async function imageToDataURL(file) {
   const read = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
   if (file.type === 'image/svg+xml') {
     if (file.size > 400_000) throw new Error('That SVG is too large (max 400 KB).');
-    return read(file);
+    return cleanSVG(await file.text());
   }
   if (!file.type.startsWith('image/')) throw new Error('Please choose an image file.');
   const bmp = await createImageBitmap(file);
@@ -1224,7 +1247,13 @@ async function fetchPublished() {
   return { doc: JSON.parse(text), sha: await gitBlobSha(text).catch(() => '') };
 }
 
-function loadGH() { try { return { ...DEFAULT_REPO, ...JSON.parse(localStorage.getItem(GH_KEY) || '{}') }; } catch { return { ...DEFAULT_REPO }; } }
+function loadGH() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(GH_KEY) || '{}'); } catch { /* ignore */ }
+  // Settings saved for a different site (or older settings for a different repo) are not reused.
+  const same = saved.site ? saved.site === SITE_KEY : saved.owner === DEFAULT_REPO.owner && saved.repo === DEFAULT_REPO.repo;
+  return same ? { ...DEFAULT_REPO, ...saved } : { ...DEFAULT_REPO };
+}
 
 function openPublish() {
   flushCommit();
@@ -1260,6 +1289,12 @@ function openPublish() {
     go.disabled = true;
     log.replaceChildren();
     for (const [from, to] of moved) write(`${from} now forwards to ${to}.`);
+    // Pages are built with the site code this tab loaded; don't publish with an outdated copy.
+    if (await codeChangedSince(cfg, OPENED_AT).catch(() => false)) {
+      write('Your site’s design code was updated after you opened the editor. Your draft is saved: reload the editor (in a few minutes, once the site has updated), then publish.', 'err');
+      go.disabled = false;
+      return;
+    }
     try {
       const r = await publishToGitHub({ ...cfg, message: msg.value.trim() || 'Update site content', doc: state.doc, log: write, origin: SITE, buildSite, staleFiles,
         base: state.base,
@@ -1312,7 +1347,7 @@ function openPublish() {
 // GitHub connection shared by publish, history and cloud drafts
 function rememberGH(cfg, persist) {
   state.ghToken = cfg.token;
-  try { localStorage.setItem(GH_KEY, JSON.stringify(persist ? cfg : { ...cfg, token: '' })); } catch { /* ignore */ }
+  try { localStorage.setItem(GH_KEY, JSON.stringify({ ...cfg, token: persist ? cfg.token : '', site: SITE_KEY })); } catch { /* ignore */ }
 }
 
 function currentGH() {
@@ -1561,7 +1596,7 @@ function openMediaPicker(onPick) {
 // ---------------------------------------------------------------------------
 // History: saved versions (this browser), cloud drafts and published versions
 async function addVersion(name) {
-  await versions.add({ id: uid('v'), name, savedAt: Date.now(), json: JSON.stringify(state.doc) });
+  await versions.add({ id: uid('v'), name, savedAt: Date.now(), json: JSON.stringify(state.doc), site: SITE_KEY });
   const all = await versions.list();
   await Promise.all(all.slice(40).map((v) => versions.del(v.id)));
 }
@@ -1595,7 +1630,7 @@ function panelHistory(box) {
     } }, ico('bookmark'), 'Save current version'));
   const local = el('div', { class: 'hist' }, el('p', { class: 'p-hint' }, 'Loading…'));
   body.append(local);
-  versions.list().then((vs) => local.replaceChildren(...(vs.length ? vs.map((v) => histRow(v.name, v.savedAt, [
+  versions.list().then((all) => all.filter((v) => !v.site || v.site === SITE_KEY)).then((vs) => local.replaceChildren(...(vs.length ? vs.map((v) => histRow(v.name, v.savedAt, [
     ['Restore', () => confirm(`Restore “${v.name}”? Your current work can be brought back with Undo.`) && restoreDoc(JSON.parse(v.json), `Restored “${v.name}”`)],
     ['Delete', async () => { await versions.del(v.id); renderPanel(); }, 'ed-btn--danger'],
   ])) : [el('p', { class: 'p-hint' }, 'No saved versions yet.')]))).catch(() => local.replaceChildren(el('p', { class: 'p-hint' }, 'Saved versions are not available in this browser.')));
@@ -1865,17 +1900,33 @@ async function boot() {
   try { ({ doc: published, sha: publishedSha } = await fetchPublished()); } catch (e) { toast(e.message, { error: true }); }
   let draft = null;
   let known = [];
+  let saved = null;
+  let aside = null;
   try {
-    const saved = await kv.get('draft');
-    if (saved?.json) draft = { doc: JSON.parse(saved.json), base: saved.base || '' };
+    saved = await kv.get('draft');
+    aside = await kv.get('draft-aside');
     known = (await kv.get('known-bases')) || [];
   } catch { /* IndexedDB unavailable */ }
+  // A draft for a different site (the editor was pointed elsewhere) is kept aside, not loaded.
+  if (saved?.json && saved.site && saved.site !== SITE_KEY) {
+    await kv.set('draft-aside', { ...saved, reason: 'site' }).catch(() => {});
+    toast(`An unpublished draft for another site (${saved.site.split('|')[0]}) was set aside.`, { duration: 10000 });
+    saved = null;
+  }
+  if (saved?.json) draft = { doc: JSON.parse(saved.json), base: saved.base || '' };
   if (!draft) { try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { /* ignore */ } }
-  const safeMigrate = (d) => { try { return d ? migrate(d) : null; } catch (err) { toast(err.message, { error: true }); return null; } };
+  let loadError = '';
+  const safeMigrate = (d) => { try { return d ? migrate(d) : null; } catch (err) { loadError = err.message; return null; } };
   published = safeMigrate(published);
+  if (!published && loadError) toast(loadError, { error: true });
   const fromDraft = safeMigrate(draft?.doc);
+  if (draft?.doc && !fromDraft) {
+    // Made by a newer version of the site: keep it instead of overwriting it on the first edit.
+    await kv.set('draft-aside', { savedAt: Date.now(), json: JSON.stringify(draft.doc), base: draft.base, site: SITE_KEY, reason: 'newer' }).catch(() => {});
+    toast('Your unpublished draft was made with a newer version of your site and can’t be opened yet. It was kept safe and will be offered again once the site has updated.', { error: true, duration: 15000 });
+  }
   state.doc = fromDraft || published;
-  if (!state.doc) return;
+  if (!state.doc) { showFatal(`Your site’s content couldn’t be loaded. ${loadError}`); return; }
   state.published = published ? JSON.stringify(published) : '';
   state.snap = JSON.stringify(state.doc);
   // A draft remembers which live version it started from (older drafts don't know).
@@ -1892,6 +1943,14 @@ async function boot() {
   if (changedElsewhere && state.snap !== state.published) {
     toast('Your site was changed somewhere else after you started this draft. Publishing the draft would replace those changes.', { action: 'Load live version', onAction: resetToPublished, duration: 20000 });
   } else if (draft?.doc && state.snap !== state.published) toast('Restored your unpublished draft', { action: 'Discard', onAction: resetToPublished });
+  // A draft set aside earlier (newer site version) can be opened once this site understands it.
+  if (aside?.json && aside.reason === 'newer' && (aside.json !== saved?.json)) {
+    let ok = null;
+    try { ok = migrate(JSON.parse(aside.json)); } catch { ok = null; }
+    if (ok) {
+      toast(`A draft from ${when(aside.savedAt)} was kept safe earlier. Open it?`, { duration: 20000, action: 'Open', onAction: () => { kv.del('draft-aside').catch(() => {}); restoreDoc(JSON.parse(aside.json), 'Draft opened'); } });
+    }
+  }
   syncUrl();
 
   $$('.ed-rail button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
@@ -1901,7 +1960,7 @@ async function boot() {
   $('#page-select').addEventListener('change', (e) => goToPage(+e.target.value));
   $('#publish').addEventListener('click', openPublish);
   $('#preview').addEventListener('click', async () => { flushCommit(); await saveDraft(); const post = state.post && findPost(state.post);
-    window.open(`preview.html?path=${encodeURIComponent(post ? `/${POSTS_BASE}/${post.slug}/` : pageHref(page(), state.page))}`, '_blank'); });
+    window.open(`preview.html?path=${encodeURIComponent(post ? `/${POSTS_BASE}/${post.slug}/` : pageHref(page(), state.page))}`, '_blank', 'noopener'); });
   $('#find').addEventListener('click', openFindReplace);
   document.addEventListener('keydown', onGlobalKey);
   addEventListener('beforeunload', () => flushCommit());

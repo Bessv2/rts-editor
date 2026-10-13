@@ -4,7 +4,7 @@
   "description": "Standalone visual editor for roetechnologyservices.com. No runtime dependencies.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "configure": "node scripts/configure.mjs",
