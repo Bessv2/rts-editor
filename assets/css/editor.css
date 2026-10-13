@@ -328,3 +328,4 @@ kbd { font: 600 11px ui-monospace, monospace; padding: 2px 6px; border-radius: 5
 .pub-checks__all { margin-top: 8px; border: 0; background: none; padding: 0; color: var(--e-accent); font-weight: 600; text-decoration: underline; cursor: pointer; }
 .ed-flash-field { animation: ed-flash-field 1.6s ease; }
 @keyframes ed-flash-field { 0%, 60% { box-shadow: 0 0 0 3px rgba(37, 99, 235, .45); } 100% { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0); } }
+.md-tools__txt { font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }

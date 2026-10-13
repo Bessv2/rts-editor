@@ -2,6 +2,7 @@
 import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft } from './publish.js';
 import { kv, versions } from './store.js';
 import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
+import { htmlToMarkdown, hasFormatting } from './html-to-md.js';
 
 // Refuse to run inside another site's frame (clickjacking protection;
 // GitHub Pages can't send X-Frame-Options headers).
@@ -421,8 +422,11 @@ function renderInspector() {
       el('div', { class: 'md-cheats' }, [
         ['**bold**', 'bold'], ['*italic*', 'italic'], ['[text](https://…)', 'link'], ['## Heading', 'section heading'],
         ['- item', 'bullet list'], ['1. item', 'numbered list'], ['> quote', 'quote'], ['![caption](image)', 'image'], ['---', 'divider line'],
+        ...(has('code') ? [['`code`', 'code'], ['```', 'code block (on its own line before and after)']] : []),
+        ...(has('callouts') ? [['> [!TIP]', 'tip box (also [!NOTE], [!WARNING])']] : []),
       ].map(([code, what]) => el('div', {}, el('code', {}, code), el('span', {}, what)))),
-      el('p', { class: 'p-hint', style: 'margin-top:14px' }, 'Leave a blank line between paragraphs. Press Publish when you are ready for it to go live.')));
+      el('p', { class: 'p-hint', style: 'margin-top:14px' }, 'Leave a blank line between paragraphs. Press Publish when you are ready for it to go live.'),
+      el('p', { class: 'p-hint' }, 'Writing in Word or Google Docs? Copy and paste: headings, lists, bold, italic and links come along.')));
     return;
   }
   if (!state.sel) {
@@ -519,6 +523,28 @@ function fieldControl(f, path, val, change, target, onRender) {
       const ta = el('textarea', { class: 'md-in', rows: f.rows || 14, 'data-path': path, placeholder: f.placeholder || 'Start writing…', oninput: (e) => change(path, e.target.value, { soon: true }) });
       ta.value = val ?? '';
       const fire = () => { ta.focus(); ta.dispatchEvent(new Event('input')); };
+      // Formatted text from Word, Google Docs or web pages keeps its headings, lists, bold and links.
+      ta.addEventListener('paste', (e) => {
+        const html = e.clipboardData?.getData('text/html');
+        if (!html || !hasFormatting(html)) return;
+        const md = htmlToMarkdown(html);
+        if (!md) return;
+        e.preventDefault();
+        const [a, b] = [ta.selectionStart, ta.selectionEnd];
+        const before = ta.value.slice(0, a);
+        const gap = before && !before.endsWith('\n\n') && /\n/.test(md) ? (before.endsWith('\n') ? '\n' : '\n\n') : '';
+        ta.setRangeText(gap + md, a, b, 'end');
+        fire();
+        toast('Pasted with formatting. Press Ctrl+Z to undo.');
+      });
+      const block = (text) => {
+        const [a, b] = [ta.selectionStart, ta.selectionEnd];
+        const before = ta.value.slice(0, a);
+        const lead = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+        ta.setRangeText(`${lead}${text(ta.value.slice(a, b))}\n`, a, b, 'end');
+        fire();
+      };
+      const callout = (kind, ph) => block((sel) => `> [!${kind}]\n${(sel || ph).split('\n').map((l) => `> ${l}`).join('\n')}`);
       const wrapSel = (before, after, ph) => {
         const [a, b] = [ta.selectionStart, ta.selectionEnd];
         const sel = ta.value.slice(a, b) || ph;
@@ -538,6 +564,14 @@ function fieldControl(f, path, val, change, target, onRender) {
         [el('b', {}, 'H'), 'Heading', () => prefix('## ')],
         [ico('list'), 'Bullet list', () => prefix('- ')],
         [ico('quote'), 'Quote', () => prefix('> ')],
+        ...(has('code') ? [
+          [ico('code'), 'Code (inline)', () => wrapSel('`', '`', 'code')],
+          [el('b', { class: 'md-tools__txt' }, '{ }'), 'Code block', () => block((sel) => `\`\`\`\n${sel || 'paste code here'}\n\`\`\``)],
+        ] : []),
+        ...(has('callouts') ? [
+          [ico('bulb'), 'Tip box', () => callout('TIP', 'A helpful tip.')],
+          [ico('alert'), 'Warning box', () => callout('WARNING', 'Something to watch out for.')],
+        ] : []),
         [ico('image'), 'Image', () => openMediaPicker((src) => { const nl = ta.value.indexOf('\n', ta.selectionEnd); const at = nl === -1 ? ta.value.length : nl; ta.setRangeText(`\n![](${mediaRef(src)})\n`, at, at, 'end'); fire(); })],
       ];
       put(wrap, label, el('div', { class: 'md-tools' }, tools.map(([content, title, fn]) => el('button', { type: 'button', title, onclick: fn }, content))), ta, help);

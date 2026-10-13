@@ -234,6 +234,56 @@ test('checkup finds problems, blocks publishing on errors and shows where they a
   await ctx.close();
 });
 
+test('pasting from Word or Google Docs keeps formatting; code and tip box buttons', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  const gdocs = '<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1"><h1 dir="ltr"><span style="font-weight:700">Backups</span></h1>'
+    + '<p dir="ltr"><span style="font-weight:400">Keep </span><span style="font-weight:700">three</span><span style="font-weight:400"> copies, </span><span style="font-style:italic">offsite</span><span>. See </span><a href="https://example.com/x"><span>this guide</span></a></p>'
+    + '<ul><li><p><span>Daily</span></p></li><li><p><span>Weekly</span></p></li></ul></b>';
+  const word = '<html xmlns:o="urn:schemas-microsoft-com:office:office"><body><p class=MsoNormal><b>Title line</b><o:p></o:p></p>'
+    + "<p class=MsoListParagraphCxSpFirst style='mso-list:l0 level1 lfo1'><span style='mso-list:Ignore'>1.<span>&nbsp;&nbsp;</span></span>First</p>"
+    + "<p class=MsoListParagraphCxSpLast style='mso-list:l0 level1 lfo1'><span style='mso-list:Ignore'>2.<span>&nbsp;</span></span>Second</p></body></html>";
+  const out = await p.evaluate(async ([g, w]) => {
+    const m = await import('./assets/js/html-to-md.js');
+    return {
+      g: m.htmlToMarkdown(g), w: m.htmlToMarkdown(w),
+      unsafe: m.htmlToMarkdown('<p>Hi<script>alert(1)</script> <img src="x" onerror="alert(1)"> <a href="javascript:alert(1)">x</a></p>'),
+      plain: m.hasFormatting('<div><span style="color:red">const a = 1;</span></div>'),
+    };
+  }, [gdocs, word]);
+  assert.equal(out.g, '## Backups\n\nKeep **three** copies, *offsite*. See [this guide](https://example.com/x)\n\n- Daily\n- Weekly');
+  assert.equal(out.w, '**Title line**\n\n1. First\n2. Second');
+  assert.equal(out.unsafe, 'Hi x');
+  assert.equal(out.plain, false, 'code editor HTML is pasted as plain text');
+
+  // Paste into a new post
+  await p.click('.ed-rail button[data-tab="blog"]');
+  await p.click('button:has-text("New post")');
+  const body = p.locator('#panel textarea[data-path="body"]');
+  await body.focus();
+  await p.evaluate((html) => {
+    const dt = new DataTransfer();
+    dt.setData('text/html', html);
+    dt.setData('text/plain', 'Backups Keep three copies');
+    document.activeElement.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, gdocs);
+  assert.match(await body.inputValue(), /^## Backups\n\nKeep \*\*three\*\*/);
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.post__body h2', { hasText: 'Backups' }).waitFor();
+
+  if (!theme.FEATURES?.includes('callouts')) return;
+  await p.click('#panel .md-tools button[title="Tip box"]');
+  assert.match(await body.inputValue(), /\n\n> \[!TIP\]\n> A helpful tip\.\n$/);
+  await canvas.locator('.post__body .callout--tip').waitFor();
+  await p.click('#panel .md-tools button[title="Code block"]');
+  await canvas.locator('.post__body pre.code').waitFor();
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('a foreign script cannot run in the editor', async () => {
   const ctx = await browser.newContext();
   const p = await ctx.newPage();
