@@ -712,20 +712,22 @@ function fieldControl(f, path, val, change, target, onRender) {
 }
 
 // SVG files can carry scripts that would run on the site when the file is
-// opened directly, so only the drawing is kept.
+// opened directly, so only the drawing is kept. It is parsed inside a
+// <template>, whose contents are inert (nothing loads, no handler runs).
 function cleanSVG(text) {
-  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
-  if (doc.querySelector('parsererror') || doc.documentElement.localName !== 'svg') throw new Error('That SVG file could not be read.');
-  doc.querySelectorAll('script, foreignObject, iframe, embed, object, audio, video, set, animate[attributeName*="href" i]').forEach((n) => n.remove());
-  for (const n of doc.querySelectorAll('*')) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = text;
+  const svg = tpl.content.querySelector('svg');
+  if (!svg) throw new Error('That SVG file could not be read.');
+  svg.querySelectorAll('script, foreignObject, iframe, embed, object, audio, video, set, animate[attributeName*="href" i]').forEach((n) => n.remove());
+  for (const n of [svg, ...svg.querySelectorAll('*')]) {
     for (const a of [...n.attributes]) {
       const name = a.name.toLowerCase();
       const v = a.value.trim().toLowerCase();
       if (name.startsWith('on') || ((name === 'href' || name.endsWith(':href')) && !v.startsWith('#') && !v.startsWith('data:image/'))) n.removeAttribute(a.name);
     }
   }
-  const svg = new XMLSerializer().serializeToString(doc);
-  const bytes = new TextEncoder().encode(svg);
+  const bytes = new TextEncoder().encode(new XMLSerializer().serializeToString(svg));
   let bin = '';
   bytes.forEach((b) => { bin += String.fromCharCode(b); });
   return `data:image/svg+xml;base64,${btoa(bin)}`;

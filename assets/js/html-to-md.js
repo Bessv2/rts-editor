@@ -1,7 +1,8 @@
 // Turns formatted text copied from Word, Google Docs or a web page into the
 // simple markdown the blog uses (## headings, **bold**, *italic*, [links](…),
-// lists, > quotes, `code`). Runs in the browser on the clipboard's HTML; the
-// HTML is parsed into an inert document and only read, never inserted.
+// lists, > quotes, `code`). Runs in the browser on the clipboard's HTML. The
+// HTML is parsed inside a <template>, whose contents are inert by definition
+// (nothing loads, no event handler can run), and is only read, never inserted.
 
 const SKIP = new Set(['SCRIPT', 'STYLE', 'META', 'LINK', 'TITLE', 'HEAD', 'TEMPLATE', 'svg', 'SVG', 'IFRAME', 'OBJECT', 'NOSCRIPT']);
 const BLOCK = new Set(['P', 'DIV', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'MAIN', 'ASIDE', 'NAV', 'FIGURE', 'FIGCAPTION', 'TABLE', 'TR', 'BLOCKQUOTE', 'PRE', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HR', 'DL', 'DT', 'DD']);
@@ -27,7 +28,8 @@ function safeLink(href) {
 }
 
 export function htmlToMarkdown(html) {
-  const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+  const tpl = document.createElement('template');
+  tpl.innerHTML = String(html || '');
   const blocks = [];
   let line = '';
 
@@ -139,7 +141,7 @@ export function htmlToMarkdown(html) {
     flush();
   }
 
-  [...doc.body.childNodes].forEach(block);
+  [...tpl.content.childNodes].forEach(block);
   flush();
   return blocks.join('\n\n').replace(/ /g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
