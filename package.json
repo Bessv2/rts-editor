@@ -1,6 +1,7 @@
 {
   "name": "rts-editor",
   "private": true,
+  "license": "UNLICENSED",
   "description": "Standalone visual editor for roetechnologyservices.com. No runtime dependencies.",
   "type": "module",
   "engines": {
