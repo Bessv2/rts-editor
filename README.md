@@ -29,10 +29,20 @@ editor.roetechnologyservices.com          roetechnologyservices.com
   browser and is only sent to `api.github.com`.
 - **Versioned contract.** `theme-api.js` exports `EDITOR_API`. If the site ever changes that
   contract, the editor shows a clear message instead of corrupting content. CI re-tests the
-  editor against the live site's code every week.
+  editor against the live site's code every week. (GitHub pauses scheduled runs in a repository
+  with no activity for 60 days; turn it back on under Actions → CI if that happens.)
 - **Optional features follow the site.** Newer site options (unpublished pages, "Hide from
   search engines", redirects) appear in the editor only when the site's `theme-api.js` lists them
   in `FEATURES`, so the editor keeps working with an older site.
+
+### Checkup
+
+The **Checkup** tab runs the site's own checks (`audit.js` in the site repo) as you work. It finds
+broken links, buttons without links, pages without a main headline, leftover sample text
+(underlined on the page), missing search descriptions, a contact form with nowhere to send
+messages, and more. Each item has a **Show me** button that jumps to the right page, section or
+setting. The Publish window lists anything worth fixing; problems marked “Must fix” block
+publishing until they are fixed.
 
 ### Page options
 
@@ -58,7 +68,12 @@ editor.roetechnologyservices.com          roetechnologyservices.com
    (and keeps drafts) separately from the old built-in editor.
 
 DNS changes can take a few minutes to an hour, and GitHub then issues the HTTPS certificate
-automatically. Until then, keep using the built-in editor at roetechnologyservices.com/editor.html.
+automatically.
+
+**Moving from the old built-in editor:** drafts and saved tokens don't carry over, because the
+editor now lives on its own address. If the old editor (roetechnologyservices.com/editor.html)
+has unpublished work, publish it there first, or use Settings → Backup → Download backup there
+and Settings → Backup → Restore from file here.
 
 ## Security
 
@@ -81,13 +96,17 @@ Everything about the connected site is in `editor.config.json`:
 ```
 
 After changing it, run `npm run configure`. That regenerates `assets/js/site-config.js`, the
-security policy in `index.html`/`preview.html` and `CNAME`. Any site that serves a compatible
-`assets/js/theme-api.js` (over https, from GitHub Pages or any host with CORS enabled) can be
-edited this way.
+security policy in `index.html`/`preview.html` and `CNAME` (removed when `editorDomain` is left
+out). Any site that serves a compatible `assets/js/theme-api.js` from the root of its own domain
+(over https, from GitHub Pages or any host with CORS enabled) can be edited this way. Sites served
+from a sub-folder, such as `user.github.io/repo/`, are not supported.
+
+Drafts, saved versions and GitHub settings are stored per site, so pointing the editor at another
+site never publishes one site's draft to the other.
 
 ## Development
 
-Requirements: Node.js 20 or newer. No dependencies.
+Requirements: Node.js 22 or newer. No dependencies.
 
 ```sh
 npm run check        # generated config is in sync with editor.config.json

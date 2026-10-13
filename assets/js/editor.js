@@ -1,7 +1,8 @@
 // Visual site editor. Edits content/site.json through a live canvas.
-import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft } from './publish.js';
+import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft, gitBlobSha, PublishCancelled, codeChangedSince } from './publish.js';
 import { kv, versions } from './store.js';
 import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
+import { htmlToMarkdown, hasFormatting, stripHandlers } from './html-to-md.js';
 
 // Refuse to run inside another site's frame (clickjacking protection;
 // GitHub Pages can't send X-Frame-Options headers).
@@ -31,6 +32,9 @@ const DRAFT_KEY = 'rts-editor-draft';
 const GH_KEY = 'rts-editor-github';
 const CLIP_KEY = 'rts-editor-clipboard';
 const DEFAULT_REPO = { owner: CONFIG.repo.owner, repo: CONFIG.repo.name, branch: CONFIG.repo.branch };
+// Drafts, versions and GitHub settings belong to one site, in case the editor is pointed at another.
+const SITE_KEY = `${SITE}|${CONFIG.repo.owner}/${CONFIG.repo.name}`;
+const OPENED_AT = new Date();
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -41,6 +45,7 @@ const state = {
   doc: null, page: 0, sel: null, tab: 'add', device: 'desktop',
   history: [], future: [], snap: '', published: '',
   open: new Set(), commitTimer: 0, ghToken: '', clipboard: null, post: null,
+  base: '', // content/site.json version (git sha) this draft started from
 };
 
 // ---------------------------------------------------------------------------
@@ -92,14 +97,26 @@ function commit() {
   state.snap = s;
   saveDraft(s);
   updateTopbar();
+  refreshChecksSoon();
 }
 function commitSoon() { clearTimeout(state.commitTimer); state.commitTimer = setTimeout(commit, 500); }
 function flushCommit() { if (state.commitTimer) commit(); }
 
 function saveDraft(s = JSON.stringify(state.doc)) {
   try { localStorage.removeItem(DRAFT_KEY); } catch { /* legacy draft location */ }
-  const p = s === state.published ? kv.del('draft') : kv.set('draft', { savedAt: Date.now(), json: s });
+  const p = s === state.published ? kv.del('draft') : kv.set('draft', { savedAt: Date.now(), json: s, base: state.base, site: SITE_KEY });
   return p.catch(() => toast('Could not save your draft in this browser. Publish or download a backup to keep your work.', { error: true }));
+}
+
+// Versions of the live content this browser has started from or published,
+// so an old copy served from the site's cache isn't mistaken for someone else's change.
+async function setBase(sha) {
+  if (!sha) return;
+  state.base = sha;
+  try {
+    const known = (await kv.get('known-bases')) || [];
+    if (!known.includes(sha)) await kv.set('known-bases', [sha, ...known].slice(0, 30));
+  } catch { /* IndexedDB unavailable */ }
 }
 
 function restore(snap) {
@@ -163,6 +180,7 @@ function renderCanvas({ keepScroll = true } = {}) {
   app.innerHTML = post ? renderPostPage(state.doc, post, { preview: true }) : renderPage(state.doc, state.page, { edit: true });
   makeEditable(app);
   decorateSelection();
+  markSamples();
   d.defaultView.scrollTo(0, keepScroll ? y : 0);
 }
 
@@ -178,6 +196,7 @@ function refreshSection(id) {
   old.replaceWith(fresh);
   makeEditable(fresh);
   decorateSelection();
+  markSamples();
 }
 
 function applyTheme() {
@@ -418,8 +437,11 @@ function renderInspector() {
       el('div', { class: 'md-cheats' }, [
         ['**bold**', 'bold'], ['*italic*', 'italic'], ['[text](https://…)', 'link'], ['## Heading', 'section heading'],
         ['- item', 'bullet list'], ['1. item', 'numbered list'], ['> quote', 'quote'], ['![caption](image)', 'image'], ['---', 'divider line'],
+        ...(has('code') ? [['`code`', 'code'], ['```', 'code block (on its own line before and after)']] : []),
+        ...(has('callouts') ? [['> [!TIP]', 'tip box (also [!NOTE], [!WARNING])']] : []),
       ].map(([code, what]) => el('div', {}, el('code', {}, code), el('span', {}, what)))),
-      el('p', { class: 'p-hint', style: 'margin-top:14px' }, 'Leave a blank line between paragraphs. Press Publish when you are ready for it to go live.')));
+      el('p', { class: 'p-hint', style: 'margin-top:14px' }, 'Leave a blank line between paragraphs. Press Publish when you are ready for it to go live.'),
+      el('p', { class: 'p-hint' }, 'Writing in Word or Google Docs? Copy and paste: headings, lists, bold, italic and links come along.')));
     return;
   }
   if (!state.sel) {
@@ -516,6 +538,28 @@ function fieldControl(f, path, val, change, target, onRender) {
       const ta = el('textarea', { class: 'md-in', rows: f.rows || 14, 'data-path': path, placeholder: f.placeholder || 'Start writing…', oninput: (e) => change(path, e.target.value, { soon: true }) });
       ta.value = val ?? '';
       const fire = () => { ta.focus(); ta.dispatchEvent(new Event('input')); };
+      // Formatted text from Word, Google Docs or web pages keeps its headings, lists, bold and links.
+      ta.addEventListener('paste', (e) => {
+        const html = e.clipboardData?.getData('text/html');
+        if (!html || !hasFormatting(html)) return;
+        const md = htmlToMarkdown(html);
+        if (!md) return;
+        e.preventDefault();
+        const [a, b] = [ta.selectionStart, ta.selectionEnd];
+        const before = ta.value.slice(0, a);
+        const gap = before && !before.endsWith('\n\n') && /\n/.test(md) ? (before.endsWith('\n') ? '\n' : '\n\n') : '';
+        ta.setRangeText(gap + md, a, b, 'end');
+        fire();
+        toast('Pasted with formatting. Press Ctrl+Z to undo.');
+      });
+      const block = (text) => {
+        const [a, b] = [ta.selectionStart, ta.selectionEnd];
+        const before = ta.value.slice(0, a);
+        const lead = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+        ta.setRangeText(`${lead}${text(ta.value.slice(a, b))}\n`, a, b, 'end');
+        fire();
+      };
+      const callout = (kind, ph) => block((sel) => `> [!${kind}]\n${(sel || ph).split('\n').map((l) => `> ${l}`).join('\n')}`);
       const wrapSel = (before, after, ph) => {
         const [a, b] = [ta.selectionStart, ta.selectionEnd];
         const sel = ta.value.slice(a, b) || ph;
@@ -535,6 +579,14 @@ function fieldControl(f, path, val, change, target, onRender) {
         [el('b', {}, 'H'), 'Heading', () => prefix('## ')],
         [ico('list'), 'Bullet list', () => prefix('- ')],
         [ico('quote'), 'Quote', () => prefix('> ')],
+        ...(has('code') ? [
+          [ico('code'), 'Code (inline)', () => wrapSel('`', '`', 'code')],
+          [el('b', { class: 'md-tools__txt' }, '{ }'), 'Code block', () => block((sel) => `\`\`\`\n${sel || 'paste code here'}\n\`\`\``)],
+        ] : []),
+        ...(has('callouts') ? [
+          [ico('bulb'), 'Tip box', () => callout('TIP', 'A helpful tip.')],
+          [ico('alert'), 'Warning box', () => callout('WARNING', 'Something to watch out for.')],
+        ] : []),
         [ico('image'), 'Image', () => openMediaPicker((src) => { const nl = ta.value.indexOf('\n', ta.selectionEnd); const at = nl === -1 ? ta.value.length : nl; ta.setRangeText(`\n![](${mediaRef(src)})\n`, at, at, 'end'); fire(); })],
       ];
       put(wrap, label, el('div', { class: 'md-tools' }, tools.map(([content, title, fn]) => el('button', { type: 'button', title, onclick: fn }, content))), ta, help);
@@ -605,7 +657,7 @@ function fieldControl(f, path, val, change, target, onRender) {
         if (!f0) return;
         try { const src = await imageToDataURL(f0); addToMedia(src, f0.name); change(path, src, { structural: true }); } catch (err) { toast(err.message, { error: true }); }
       } });
-      const url = el('input', { class: 'in', type: 'text', placeholder: 'or paste an image URL', value: String(val || '').startsWith('data:') ? '' : (val || ''),
+      const url = el('input', { class: 'in', type: 'text', placeholder: 'or paste an image URL', 'data-path': path, value: String(val || '').startsWith('data:') ? '' : (val || ''),
         onchange: (e) => change(path, e.target.value.trim(), { structural: true }) });
       put(wrap, el('span', { class: 'f__label' }, f.label), el('div', { class: 'img-field' }, preview,
         el('div', { class: 'img-field__btns' },
@@ -659,12 +711,34 @@ function fieldControl(f, path, val, change, target, onRender) {
   }
 }
 
-// Resize uploads so drafts stay small; SVGs are kept as-is.
+// SVG files can carry scripts that would run on the site when the file is
+// opened directly, so only the drawing is kept. It is parsed inside a
+// <template>, whose contents are inert (nothing loads, no handler runs).
+function cleanSVG(text) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = stripHandlers(text);
+  const svg = tpl.content.querySelector('svg');
+  if (!svg) throw new Error('That SVG file could not be read.');
+  svg.querySelectorAll('script, foreignObject, iframe, embed, object, audio, video, set, animate[attributeName*="href" i]').forEach((n) => n.remove());
+  for (const n of [svg, ...svg.querySelectorAll('*')]) {
+    for (const a of [...n.attributes]) {
+      const name = a.name.toLowerCase();
+      const v = a.value.trim().toLowerCase();
+      if (name.startsWith('on') || ((name === 'href' || name.endsWith(':href')) && !v.startsWith('#') && !v.startsWith('data:image/'))) n.removeAttribute(a.name);
+    }
+  }
+  const bytes = new TextEncoder().encode(new XMLSerializer().serializeToString(svg));
+  let bin = '';
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return `data:image/svg+xml;base64,${btoa(bin)}`;
+}
+
+// Resize uploads so drafts stay small; SVGs are cleaned but keep their size.
 async function imageToDataURL(file) {
   const read = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
   if (file.type === 'image/svg+xml') {
     if (file.size > 400_000) throw new Error('That SVG is too large (max 400 KB).');
-    return read(file);
+    return cleanSVG(await file.text());
   }
   if (!file.type.startsWith('image/')) throw new Error('Please choose an image file.');
   const bmp = await createImageBitmap(file);
@@ -707,13 +781,38 @@ function setTab(tab) {
   state.tab = tab;
   $$('.ed-rail button').forEach((b) => b.classList.toggle('is-on', b.dataset.tab === tab));
   renderPanel();
+  syncUrl();
+}
+
+// The address bar remembers the page, post and panel (#page=services&tab=pages),
+// so reloading or bookmarking the editor comes back to the same place.
+const TABS = ['add', 'layers', 'pages', 'blog', 'media', 'theme', 'site', 'history', 'checkup', 'help'];
+function syncUrl() {
+  if (!state.doc) return;
+  const q = new URLSearchParams();
+  if (state.post) q.set('post', state.post);
+  else if (state.page > 0) q.set('page', page().slug || String(state.page));
+  if (state.tab !== 'add' && !(state.post && state.tab === 'blog')) q.set('tab', state.tab);
+  const hash = q.toString();
+  if (location.hash.slice(1) !== hash) history.replaceState(null, '', hash ? `#${hash}` : location.pathname + location.search);
+}
+function restoreUrl() {
+  const q = new URLSearchParams(location.hash.slice(1));
+  const slug = q.get('page');
+  const i = slug ? state.doc.pages.findIndex((p, n) => n > 0 && (p.slug === slug || String(n) === slug)) : -1;
+  if (i > 0) state.page = i;
+  const tab = q.get('tab');
+  if (TABS.includes(tab) && (tab !== 'checkup' || has('audit'))) state.tab = tab;
+  const post = q.get('post');
+  if (post && findPost(post)) { state.post = post; state.tab = 'blog'; }
+  $$('.ed-rail button').forEach((b) => b.classList.toggle('is-on', b.dataset.tab === state.tab));
 }
 
 function renderPanel() {
   const box = $('#panel');
   const scroll = box.scrollTop;
   box.replaceChildren();
-  ({ add: panelAdd, layers: panelLayers, pages: panelPages, media: panelMedia, blog: panelBlog, theme: panelTheme, site: panelSite, history: panelHistory, help: panelHelp })[state.tab](box);
+  ({ add: panelAdd, layers: panelLayers, pages: panelPages, media: panelMedia, blog: panelBlog, theme: panelTheme, site: panelSite, history: panelHistory, checkup: panelCheckup, help: panelHelp })[state.tab](box);
   box.scrollTop = scroll;
 }
 
@@ -813,6 +912,7 @@ function goToPage(i) {
   renderInspector();
   renderPanel();
   updateTopbar();
+  syncUrl();
 }
 
 function panelPages(box) {
@@ -850,8 +950,8 @@ function panelPages(box) {
           if (e.target.checked) p.noindex = true; else delete p.noindex;
           commit(); renderPanel();
         } })), el('p', { class: 'f__help' }, i === 0 && p.noindex ? 'Your home page won’t appear in Google and other search engines.' : 'The page stays on your site, but Google and others are asked not to list it.')) : null,
-        el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); } })),
-        el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); } }), { value: p.seoDescription || '' })),
+        el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', 'data-path': 'seoTitle', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); } })),
+        el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, 'data-path': 'seoDescription', placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); } }), { value: p.seoDescription || '' })),
         el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i <= 1, title: i === 0 ? 'Home stays first' : 'Move up', onclick: () => movePage(i, -1) }, ico('chevron-up')),
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i === 0 || i === state.doc.pages.length - 1, title: 'Move down', onclick: () => movePage(i, 1) }, ico('chevron-down')),
@@ -1133,7 +1233,9 @@ function importJSON() {
 async function resetToPublished() {
   if (!confirm('Discard your draft and load the live version? You can undo this.')) return;
   try {
-    state.doc = migrate(await fetchPublished());
+    const live = await fetchPublished();
+    state.doc = migrate(live.doc);
+    await setBase(live.sha);
     state.page = 0; state.sel = null;
     commit(); refreshAll();
     toast('Loaded the live version', { action: 'Undo', onAction: undo });
@@ -1143,10 +1245,17 @@ async function resetToPublished() {
 async function fetchPublished() {
   const res = await fetch(`${SITE}/content/site.json?v=${Date.now()}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Could not load content/site.json (${res.status})`);
-  return res.json();
+  const text = await res.text();
+  return { doc: JSON.parse(text), sha: await gitBlobSha(text).catch(() => '') };
 }
 
-function loadGH() { try { return { ...DEFAULT_REPO, ...JSON.parse(localStorage.getItem(GH_KEY) || '{}') }; } catch { return { ...DEFAULT_REPO }; } }
+function loadGH() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(GH_KEY) || '{}'); } catch { /* ignore */ }
+  // Settings saved for a different site (or older settings for a different repo) are not reused.
+  const same = saved.site ? saved.site === SITE_KEY : saved.owner === DEFAULT_REPO.owner && saved.repo === DEFAULT_REPO.repo;
+  return same ? { ...DEFAULT_REPO, ...saved } : { ...DEFAULT_REPO };
+}
 
 function openPublish() {
   flushCommit();
@@ -1160,19 +1269,39 @@ function openPublish() {
   const log = el('div', { class: 'log', hidden: true });
   const go = el('button', { type: 'button', class: 'ed-btn ed-btn--primary' }, ico('send'), 'Publish now');
   const write = (t, cls) => { log.hidden = false; log.append(el('div', { class: cls || '' }, t)); log.scrollTop = log.scrollHeight; };
+  const found = publishChecks();
+  const errors = found.filter((c) => c.level === 'error');
+  const warnings = found.filter((c) => c.level === 'warning');
+  const shown = [...errors, ...warnings];
+  const checkBox = shown.length ? el('div', { class: `pub-checks${errors.length ? ' has-err' : ''}` },
+    el('strong', {}, errors.length
+      ? `${errors.length} problem${errors.length === 1 ? '' : 's'} must be fixed before you can publish`
+      : `${warnings.length} thing${warnings.length === 1 ? '' : 's'} worth checking first (you can still publish)`),
+    checkList(shown.slice(0, 5)),
+    shown.length > 5 ? el('button', { type: 'button', class: 'pub-checks__all', onclick: () => { closeModal(); setTab('checkup'); } }, `See all ${shown.length} in Checkup`) : null) : null;
+  if (errors.length) go.disabled = true;
   go.addEventListener('click', async () => {
     const cfg = { owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', token: token.value.trim() };
     if (!cfg.owner || !cfg.repo || !cfg.token) { write('Fill in repository and token first.', 'err'); return; }
     rememberGH(cfg, remember.checked);
     const moved = keepAllOldAddresses();
     if (moved.length) commit();
-    const problems = validate(state.doc);
-    if (problems.length) { log.replaceChildren(); problems.forEach((pr) => write(pr, 'err')); write('Fix these, then publish again.', 'err'); return; }
+    const blocking = publishChecks().filter((c) => c.level === 'error');
+    if (blocking.length) { log.replaceChildren(); blocking.forEach((c) => write(c.message, 'err')); write('Fix these, then publish again.', 'err'); return; }
     go.disabled = true;
     log.replaceChildren();
     for (const [from, to] of moved) write(`${from} now forwards to ${to}.`);
+    // Pages are built with the site code this tab loaded; don't publish with an outdated copy.
+    if (await codeChangedSince(cfg, OPENED_AT).catch(() => false)) {
+      write('Your site’s design code was updated after you opened the editor. Your draft is saved: reload the editor (in a few minutes, once the site has updated), then publish.', 'err');
+      go.disabled = false;
+      return;
+    }
     try {
-      const r = await publishToGitHub({ ...cfg, message: msg.value.trim() || 'Update site content', doc: state.doc, log: write, origin: SITE, buildSite, staleFiles });
+      const r = await publishToGitHub({ ...cfg, message: msg.value.trim() || 'Update site content', doc: state.doc, log: write, origin: SITE, buildSite, staleFiles,
+        base: state.base,
+        confirmOverwrite: () => confirm('Your site was changed somewhere else (another computer, the old editor or GitHub) after you started editing.\n\nPublish anyway and replace those changes with yours? Choose Cancel to keep them; you can open them from History → Published versions.') });
+      await setBase(r.contentSha);
       state.published = JSON.stringify(state.doc);
       saveDraft();
       addVersion(`Published: ${msg.value.trim() || 'Update site content'}`).catch(() => {});
@@ -1181,11 +1310,12 @@ function openPublish() {
       if (r.commitUrl) log.append(el('div', {}, el('a', { href: r.commitUrl, target: '_blank', rel: 'noopener', style: 'color:#93c5fd' }, 'View commit on GitHub')));
       toast('Published! Changes go live in about a minute.');
     } catch (e) {
-      write(`Error: ${e.message}`, 'err');
+      write(e instanceof PublishCancelled ? e.message : `Error: ${e.message}`, 'err');
     } finally { go.disabled = false; }
   });
 
   const ghPane = el('div', {},
+    checkBox,
     el('p', {}, 'Publishing saves your changes to your website’s GitHub repository. GitHub Pages then updates the live site automatically.'),
     el('details', { class: 'note' }, el('summary', { style: 'cursor:pointer;font-weight:600' }, 'First time? Create an access token'),
       el('ol', { class: 'steps-mini', style: 'margin-top:8px' },
@@ -1219,7 +1349,7 @@ function openPublish() {
 // GitHub connection shared by publish, history and cloud drafts
 function rememberGH(cfg, persist) {
   state.ghToken = cfg.token;
-  try { localStorage.setItem(GH_KEY, JSON.stringify(persist ? cfg : { ...cfg, token: '' })); } catch { /* ignore */ }
+  try { localStorage.setItem(GH_KEY, JSON.stringify({ ...cfg, token: persist ? cfg.token : '', site: SITE_KEY })); } catch { /* ignore */ }
 }
 
 function currentGH() {
@@ -1285,6 +1415,7 @@ function openPost(id) {
   renderCanvas({ keepScroll: false });
   renderInspector();
   renderPanel();
+  syncUrl();
 }
 
 function closePost() {
@@ -1293,6 +1424,7 @@ function closePost() {
   renderCanvas({ keepScroll: false });
   renderInspector();
   renderPanel();
+  syncUrl();
 }
 
 function deletePost(id) {
@@ -1466,7 +1598,7 @@ function openMediaPicker(onPick) {
 // ---------------------------------------------------------------------------
 // History: saved versions (this browser), cloud drafts and published versions
 async function addVersion(name) {
-  await versions.add({ id: uid('v'), name, savedAt: Date.now(), json: JSON.stringify(state.doc) });
+  await versions.add({ id: uid('v'), name, savedAt: Date.now(), json: JSON.stringify(state.doc), site: SITE_KEY });
   const all = await versions.list();
   await Promise.all(all.slice(40).map((v) => versions.del(v.id)));
 }
@@ -1500,7 +1632,7 @@ function panelHistory(box) {
     } }, ico('bookmark'), 'Save current version'));
   const local = el('div', { class: 'hist' }, el('p', { class: 'p-hint' }, 'Loading…'));
   body.append(local);
-  versions.list().then((vs) => local.replaceChildren(...(vs.length ? vs.map((v) => histRow(v.name, v.savedAt, [
+  versions.list().then((all) => all.filter((v) => !v.site || v.site === SITE_KEY)).then((vs) => local.replaceChildren(...(vs.length ? vs.map((v) => histRow(v.name, v.savedAt, [
     ['Restore', () => confirm(`Restore “${v.name}”? Your current work can be brought back with Undo.`) && restoreDoc(JSON.parse(v.json), `Restored “${v.name}”`)],
     ['Delete', async () => { await versions.del(v.id); renderPanel(); }, 'ed-btn--danger'],
   ])) : [el('p', { class: 'p-hint' }, 'No saved versions yet.')]))).catch(() => local.replaceChildren(el('p', { class: 'p-hint' }, 'Saved versions are not available in this browser.')));
@@ -1541,6 +1673,116 @@ function panelHistory(box) {
   else pub.append(el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: async () => { const c = await needGH('Published versions are read from your GitHub repository.'); if (c) loadPublished(c); } }, ico('github'), 'Show published versions'));
   body.append(pub);
   box.append(body);
+}
+
+// ---------------------------------------------------------------------------
+// Checkup: the site's own rules (audit.js in the site repo) for problems to
+// fix before publishing. Errors block publishing; warnings and tips don't.
+const LEVEL_LABEL = { error: 'Must fix', warning: 'Worth fixing', tip: 'Suggestions' };
+let checks = [];
+let checkTimer = 0;
+
+function runChecks() {
+  if (!has('audit')) return [];
+  try { checks = theme.audit(state.doc); } catch (err) { console.error(err); checks = []; }
+  return checks;
+}
+
+// Without the site's checkup (older theme), only content errors block publishing.
+function publishChecks() {
+  return has('audit') ? runChecks() : validate(state.doc).map((message) => ({ level: 'error', code: 'invalid', message, where: { kind: 'site' } }));
+}
+
+function refreshChecksSoon() { if (has('audit')) { clearTimeout(checkTimer); checkTimer = setTimeout(refreshChecks, 600); } }
+function refreshChecks() {
+  if (!has('audit')) return;
+  runChecks();
+  const n = checks.filter((c) => c.level !== 'tip').length;
+  const badge = $('.ed-rail [data-tab="checkup"] .ed-rail__badge');
+  if (badge) {
+    badge.hidden = !n;
+    badge.textContent = String(n);
+    badge.classList.toggle('is-err', checks.some((c) => c.level === 'error'));
+  }
+  markSamples();
+  if (state.tab === 'checkup') renderPanel();
+}
+
+// Underline leftover sample text on the canvas so it is easy to spot.
+function markSamples() {
+  const d = cdoc();
+  if (!d?.getElementById('app')) return;
+  $$('.ed-sample', d).forEach((n) => { n.classList.remove('ed-sample'); n.removeAttribute('title'); });
+  if (state.post) return;
+  for (const c of checks) {
+    if (c.code !== 'sample-text' || c.where.page !== state.page) continue;
+    const sec = d.querySelector(`[data-section-id="${CSS.escape(c.where.section)}"]`);
+    for (const f of c.where.fields || []) {
+      const n = sec?.querySelector(`[data-edit="${CSS.escape(f)}"]`);
+      if (n) { n.classList.add('ed-sample'); n.title = 'Sample text: replace it with your own words'; }
+    }
+  }
+}
+
+function checkList(items) {
+  return el('ul', { class: 'checks' }, items.map((c) => el('li', { class: `check check--${c.level}` },
+    el('span', { class: 'check__icon' }, ico(c.level === 'tip' ? 'bulb' : 'alert')),
+    el('span', { class: 'check__msg' }, c.message),
+    el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => showProblem(c) }, 'Show me'))));
+}
+
+function panelCheckup(box) {
+  box.append(panelHead('Checkup', 'check-circle', el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => { flushCommit(); refreshChecks(); renderPanel(); } }, ico('refresh'), 'Check again')));
+  const body = el('div', { class: 'p-body' });
+  const list = runChecks();
+  if (!list.length) {
+    body.append(el('div', { class: 'empty' }, el('span', { class: 'empty__icon' }, ico('check-circle')), el('h3', {}, 'All clear'), el('p', {}, 'No problems found on any page, post or setting.')));
+  } else {
+    body.append(el('p', { class: 'p-hint' }, 'Every page, post and setting is checked as you work. Problems under “Must fix” stop publishing until they are fixed.'));
+    for (const level of ['error', 'warning', 'tip']) {
+      const items = list.filter((c) => c.level === level);
+      if (items.length) body.append(el('p', { class: 'p-sub' }, `${LEVEL_LABEL[level]} (${items.length})`), checkList(items));
+    }
+  }
+  box.append(body);
+}
+
+// Takes the editor to the page, section, post or setting a problem is about.
+function showProblem(c) {
+  const w = c.where || {};
+  closeModal();
+  if (w.kind === 'post' && findPost(w.post)) { openPost(w.post); focusField('#panel', w.field); return; }
+  if (w.kind === 'page' && state.doc.pages[w.page]) {
+    if (w.page !== state.page || state.post) goToPage(w.page);
+    if (w.section && findSection(w.section)) {
+      const item = String(w.field || '').match(/^(.+?)\.(\d+)\./);
+      if (item) state.open.add(`${w.section}:${item[1]}.${item[2]}`);
+      select(w.section, { scroll: true });
+      setTimeout(() => scrollToSection(w.section, true), 40);
+      focusField('#inspector', w.field);
+    } else {
+      setTab('pages');
+      focusField('#panel', w.field);
+    }
+    return;
+  }
+  if (c.code === 'invalid') { setTab(/^Post/.test(c.message) ? 'blog' : /redirect/i.test(c.message) ? 'site' : 'pages'); return; }
+  if (['headerCta', 'tagline', 'footerText'].includes(w.field)) { select('__header', { scroll: true }); focusField('#inspector', w.field); return; }
+  setTab('site');
+  if (w.field === 'redirects') { setTimeout(() => $('#panel .redirect-add')?.scrollIntoView({ block: 'center' }), 40); return; }
+  focusField('#panel', w.field);
+}
+
+function focusField(root, field) {
+  if (!field) return;
+  setTimeout(() => {
+    const n = $(`${root} [data-path="${CSS.escape(field)}"]`) || $(`${root} [data-path^="${CSS.escape(`${field}.`)}"]`);
+    if (!n) return;
+    n.scrollIntoView({ block: 'center' });
+    n.focus({ preventScroll: true });
+    n.classList.add('ed-flash-field');
+    setTimeout(() => n.classList.remove('ed-flash-field'), 1600);
+  }, 60);
 }
 
 // ---------------------------------------------------------------------------
@@ -1603,11 +1845,11 @@ function openModal(title, content) {
 function closeModal() { $('#modal').hidden = true; }
 $$('#modal [data-close]').forEach((n) => n.addEventListener('click', closeModal));
 
-function toast(text, { action, onAction, error = false } = {}) {
+function toast(text, { action, onAction, error = false, duration } = {}) {
   const t = el('div', { class: `toast${error ? ' is-err' : ''}` }, text);
   if (action) t.append(el('button', { type: 'button', onclick: () => { onAction(); t.remove(); } }, action));
   $('#toasts').append(t);
-  setTimeout(() => t.remove(), action ? 6000 : 3200);
+  setTimeout(() => t.remove(), duration || (action ? 6000 : 3200));
 }
 
 function updateTopbar() {
@@ -1656,23 +1898,62 @@ async function boot() {
   hydrateIcons();
   $$('a[data-site-link]').forEach((a) => { a.href = `${SITE}/`; });
   let published = null;
-  try { published = await fetchPublished(); } catch (e) { toast(e.message, { error: true }); }
+  let publishedSha = '';
+  try { ({ doc: published, sha: publishedSha } = await fetchPublished()); } catch (e) { toast(e.message, { error: true }); }
   let draft = null;
+  let known = [];
+  let saved = null;
+  let aside = null;
   try {
-    const saved = await kv.get('draft');
-    if (saved?.json) draft = { doc: JSON.parse(saved.json) };
+    saved = await kv.get('draft');
+    aside = await kv.get('draft-aside');
+    known = (await kv.get('known-bases')) || [];
   } catch { /* IndexedDB unavailable */ }
+  // A draft for a different site (the editor was pointed elsewhere) is kept aside, not loaded.
+  if (saved?.json && saved.site && saved.site !== SITE_KEY) {
+    await kv.set('draft-aside', { ...saved, reason: 'site' }).catch(() => {});
+    toast(`An unpublished draft for another site (${saved.site.split('|')[0]}) was set aside.`, { duration: 10000 });
+    saved = null;
+  }
+  if (saved?.json) draft = { doc: JSON.parse(saved.json), base: saved.base || '' };
   if (!draft) { try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { /* ignore */ } }
-  const safeMigrate = (d) => { try { return d ? migrate(d) : null; } catch (err) { toast(err.message, { error: true }); return null; } };
+  let loadError = '';
+  const safeMigrate = (d) => { try { return d ? migrate(d) : null; } catch (err) { loadError = err.message; return null; } };
   published = safeMigrate(published);
-  state.doc = safeMigrate(draft?.doc) || published;
-  if (!state.doc) return;
+  if (!published && loadError) toast(loadError, { error: true });
+  const fromDraft = safeMigrate(draft?.doc);
+  if (draft?.doc && !fromDraft) {
+    // Made by a newer version of the site: keep it instead of overwriting it on the first edit.
+    await kv.set('draft-aside', { savedAt: Date.now(), json: JSON.stringify(draft.doc), base: draft.base, site: SITE_KEY, reason: 'newer' }).catch(() => {});
+    toast('Your unpublished draft was made with a newer version of your site and can’t be opened yet. It was kept safe and will be offered again once the site has updated.', { error: true, duration: 15000 });
+  }
+  state.doc = fromDraft || published;
+  if (!state.doc) { showFatal(`Your site’s content couldn’t be loaded. ${loadError}`); return; }
   state.published = published ? JSON.stringify(published) : '';
   state.snap = JSON.stringify(state.doc);
+  // A draft remembers which live version it started from (older drafts don't know).
+  if (fromDraft) state.base = draft.base || '';
+  else await setBase(publishedSha);
+  const changedElsewhere = draft?.base && publishedSha && publishedSha !== draft.base && !known.includes(publishedSha);
+  restoreUrl();
 
   await initCanvas();
+  const checkupTab = $('.ed-rail [data-tab="checkup"]');
+  if (checkupTab) checkupTab.hidden = !has('audit');
   refreshAll();
-  if (draft?.doc && state.snap !== state.published) toast('Restored your unpublished draft', { action: 'Discard', onAction: resetToPublished });
+  refreshChecks();
+  if (changedElsewhere && state.snap !== state.published) {
+    toast('Your site was changed somewhere else after you started this draft. Publishing the draft would replace those changes.', { action: 'Load live version', onAction: resetToPublished, duration: 20000 });
+  } else if (draft?.doc && state.snap !== state.published) toast('Restored your unpublished draft', { action: 'Discard', onAction: resetToPublished });
+  // A draft set aside earlier (newer site version) can be opened once this site understands it.
+  if (aside?.json && aside.reason === 'newer' && (aside.json !== saved?.json)) {
+    let ok = null;
+    try { ok = migrate(JSON.parse(aside.json)); } catch { ok = null; }
+    if (ok) {
+      toast(`A draft from ${when(aside.savedAt)} was kept safe earlier. Open it?`, { duration: 20000, action: 'Open', onAction: () => { kv.del('draft-aside').catch(() => {}); restoreDoc(JSON.parse(aside.json), 'Draft opened'); } });
+    }
+  }
+  syncUrl();
 
   $$('.ed-rail button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
   $$('#device-toggle button').forEach((b) => b.addEventListener('click', () => setDevice(b.dataset.device)));
@@ -1681,7 +1962,7 @@ async function boot() {
   $('#page-select').addEventListener('change', (e) => goToPage(+e.target.value));
   $('#publish').addEventListener('click', openPublish);
   $('#preview').addEventListener('click', async () => { flushCommit(); await saveDraft(); const post = state.post && findPost(state.post);
-    window.open(`preview.html?path=${encodeURIComponent(post ? `/${POSTS_BASE}/${post.slug}/` : pageHref(page(), state.page))}`, '_blank'); });
+    window.open(`preview.html?path=${encodeURIComponent(post ? `/${POSTS_BASE}/${post.slug}/` : pageHref(page(), state.page))}`, '_blank', 'noopener'); });
   $('#find').addEventListener('click', openFindReplace);
   document.addEventListener('keydown', onGlobalKey);
   addEventListener('beforeunload', () => flushCommit());

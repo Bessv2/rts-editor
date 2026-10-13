@@ -43,6 +43,6 @@ export function showFatal(message) {
 // Site files (images, uploads, library) live on the site, not the editor.
 export function siteAsset(src, safeSrc) {
   const v = safeSrc(src);
-  if (!v || v.startsWith('data:') || /^https?:\/\//i.test(v)) return v;
-  return `${SITE}${v.startsWith('/') ? '' : '/'}${v}`;
+  if (!v || v.startsWith('data:')) return v;
+  return new URL(v, `${SITE}/`).href;
 }

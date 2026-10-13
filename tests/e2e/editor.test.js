@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SITE_DIR = resolve(process.env.SITE_DIR || join(ROOT, 'site'));
@@ -52,8 +53,8 @@ before(async () => {
 after(async () => { await browser?.close(); site?.close(); editor?.close(); if (tmp) await rm(tmp, { recursive: true, force: true }); });
 
 // Fake GitHub API: records the committed tree and lets tests read committed files.
-async function mockGitHub(ctx) {
-  const tree = []; const blobs = [];
+async function mockGitHub(ctx, { contentSha } = {}) {
+  const tree = []; const blobs = []; const commits = [];
   await ctx.route('https://api.github.com/**', async (r) => {
     const path = new URL(r.request().url()).pathname.replace(/^\/repos\/[^/]+\/[^/]+/, '');
     const json = (o, status = 200) => r.fulfill({ status, contentType: 'application/json', body: JSON.stringify(o) });
@@ -62,13 +63,16 @@ async function mockGitHub(ctx) {
     if (path === '/git/blobs') { blobs.push(JSON.parse(r.request().postData())); return json({ sha: `b${blobs.length - 1}` }); }
     if (path === '/contents/generated.json') return r.fulfill({ status: 200, contentType: 'text/plain', body: JSON.stringify({ files: ['index.html', 'old-page/index.html'] }) });
     if (path === '/git/trees') { tree.push(...JSON.parse(r.request().postData()).tree); return json({ sha: 't1' }); }
-    if (path === '/git/commits') return json({ sha: 'c1c1c1c1', html_url: 'https://github.com/x' });
+    if (path === '/contents/content/site.json' && contentSha) return json({ sha: contentSha });
+    if (path === '/git/commits') { commits.push(1); return json({ sha: 'c1c1c1c1', html_url: 'https://github.com/x' }); }
     if (path === '/git/refs/heads/main') return json({});
     return json({ message: 'Not Found' }, 404);
   });
   const read = (path) => Buffer.from(blobs[Number(tree.find((t) => t.path === path).sha.slice(1))].content, 'base64').toString();
-  return { tree, read };
+  return { tree, read, commits };
 }
+
+const gitSha = (buf) => createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf])).digest('hex');
 
 async function publish(p) {
   await p.click('#publish');
@@ -127,6 +131,10 @@ test('editor loads the theme and content from the site and publishes a full buil
   assert.ok(vars[1].includes(headingFont), `preview uses the draft heading font (${vars[1]})`);
   await preview.click('.nav__list a:has-text("Services")');
   assert.ok(preview.url().startsWith(editorUrl) && /path=%2Fservices%2F/.test(preview.url()), preview.url());
+  // In-page links stay in the preview even though <base> points at the site
+  await preview.evaluate(() => document.querySelector('.skip-link').click());
+  await preview.waitForTimeout(200);
+  assert.ok(preview.url().startsWith(editorUrl), `skip link stays in the preview: ${preview.url()}`);
 
   // Publish builds every page with the site's builder
   await publish(p);
@@ -189,6 +197,218 @@ test('page options: unpublish, hide from search engines, renamed pages keep thei
   const content = JSON.parse(read('content/site.json'));
   assert.deepEqual(content.redirects, [{ from: '/services/', to: '/what-we-do/' }]);
   assert.equal(content.pages.find((x) => x.title === 'About').draft, true);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('checkup finds problems, blocks publishing on errors and shows where they are', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('audit')) { t.skip('the site has no checkup yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  const tab = p.locator('.ed-rail button[data-tab="checkup"]');
+  assert.ok(await tab.isVisible(), 'Checkup tab is shown when the site supports it');
+  assert.ok(await tab.locator('.ed-rail__badge').isHidden(), 'the published site has nothing to fix');
+
+  // A new section with sample text is flagged and underlined on the canvas
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.click('.block-card:has-text("Services grid")');
+  await tab.locator('.ed-rail__badge').waitFor();
+  await canvas.locator('.ed-sample').first().waitFor();
+
+  // Removing every way the contact form can send messages is an error that blocks publishing
+  await p.click('.ed-rail button[data-tab="site"]');
+  await p.fill('#panel [data-path="email"]', '');
+  await p.fill('#panel [data-path="formEndpoint"]', '');
+  await p.click('#publish');
+  await p.locator('.pub-checks.has-err').waitFor();
+  assert.match(await p.locator('.pub-checks').innerText(), /contact form has nowhere to send messages/);
+  assert.ok(await p.locator('button:has-text("Publish now")').isDisabled());
+  await p.locator('.pub-checks .check--error button:has-text("Show me")').click();
+  await p.waitForFunction(() => document.activeElement?.dataset.path === 'email');
+  await p.fill('#panel [data-path="email"]', 'help@example.com');
+
+  // The Checkup tab lists the sample text; Show me selects that section
+  await tab.click();
+  await p.locator('#panel .check--warning', { hasText: 'sample text' }).waitFor();
+  assert.equal(await p.locator('#panel .check--error').count(), 0, 'the error is gone once an email is set');
+  await p.locator('#panel .check--warning', { hasText: 'sample text' }).locator('button').click();
+  await canvas.locator('.blk-services.is-selected').last().waitFor();
+  assert.match(await p.locator('#inspector .p-head').innerText(), /Services grid/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('pasting from Word or Google Docs keeps formatting; code and tip box buttons', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  const gdocs = '<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1"><h1 dir="ltr"><span style="font-weight:700">Backups</span></h1>'
+    + '<p dir="ltr"><span style="font-weight:400">Keep </span><span style="font-weight:700">three</span><span style="font-weight:400"> copies, </span><span style="font-style:italic">offsite</span><span>. See </span><a href="https://example.com/x"><span>this guide</span></a></p>'
+    + '<ul><li><p><span>Daily</span></p></li><li><p><span>Weekly</span></p></li></ul></b>';
+  const word = '<html xmlns:o="urn:schemas-microsoft-com:office:office"><body><p class=MsoNormal><b>Title line</b><o:p></o:p></p>'
+    + "<p class=MsoListParagraphCxSpFirst style='mso-list:l0 level1 lfo1'><span style='mso-list:Ignore'>1.<span>&nbsp;&nbsp;</span></span>First</p>"
+    + "<p class=MsoListParagraphCxSpLast style='mso-list:l0 level1 lfo1'><span style='mso-list:Ignore'>2.<span>&nbsp;</span></span>Second</p></body></html>";
+  const out = await p.evaluate(async ([g, w]) => {
+    const m = await import('./assets/js/html-to-md.js');
+    return {
+      g: m.htmlToMarkdown(g), w: m.htmlToMarkdown(w),
+      unsafe: m.htmlToMarkdown('<p>Hi<script>alert(1)</script> <img src="x" onerror="alert(1)"> <a href="javascript:alert(1)">x</a></p>'),
+      plain: m.hasFormatting('<div><span style="color:red">const a = 1;</span></div>'),
+    };
+  }, [gdocs, word]);
+  assert.equal(out.g, '## Backups\n\nKeep **three** copies, *offsite*. See [this guide](https://example.com/x)\n\n- Daily\n- Weekly');
+  assert.equal(out.w, '**Title line**\n\n1. First\n2. Second');
+  assert.equal(out.unsafe, 'Hi x');
+  assert.equal(out.plain, false, 'code editor HTML is pasted as plain text');
+
+  // Paste into a new post
+  await p.click('.ed-rail button[data-tab="blog"]');
+  await p.click('button:has-text("New post")');
+  const body = p.locator('#panel textarea[data-path="body"]');
+  await body.focus();
+  await p.evaluate((html) => {
+    const dt = new DataTransfer();
+    dt.setData('text/html', html);
+    dt.setData('text/plain', 'Backups Keep three copies');
+    document.activeElement.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, gdocs);
+  assert.match(await body.inputValue(), /^## Backups\n\nKeep \*\*three\*\*/);
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.post__body h2', { hasText: 'Backups' }).waitFor();
+
+  if (!theme.FEATURES?.includes('callouts')) return;
+  await p.click('#panel .md-tools button[title="Tip box"]');
+  assert.match(await body.inputValue(), /\n\n> \[!TIP\]\n> A helpful tip\.\n$/);
+  await canvas.locator('.post__body .callout--tip').waitFor();
+  await p.click('#panel .md-tools button[title="Code block"]');
+  await canvas.locator('.post__body pre.code').waitFor();
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('publishing over changes made somewhere else asks first', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const gh = await mockGitHub(ctx, { contentSha: 'f'.repeat(40) });
+  const p = await newPage(ctx);
+  const dialogs = [];
+  let accept = false;
+  p.on('dialog', (d) => { dialogs.push(d.message()); return accept ? d.accept() : d.dismiss(); });
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().click();
+  await p.keyboard.type(' (edited)');
+  await canvas.locator('.blk-services').first().click();
+  await p.click('#publish');
+  await p.fill('.ed-modal input[type=password]', 'github_pat_TEST');
+  await p.click('button:has-text("Publish now")');
+  await p.locator('.log .err', { hasText: 'Publishing cancelled' }).waitFor();
+  assert.match(dialogs[0], /changed somewhere else/);
+  assert.equal(gh.commits.length, 0, 'nothing is committed when cancelled');
+  accept = true;
+  await p.click('button:has-text("Publish now")');
+  await p.locator('.log .ok', { hasText: 'Done' }).waitFor();
+  assert.equal(gh.commits.length, 1);
+  assert.equal(dialogs.length, 2, 'asked once per publish attempt');
+  await ctx.close();
+
+  // No question when the repository still has the version the draft started from
+  const ctx2 = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  await mockGitHub(ctx2, { contentSha: gitSha(await readFile(join(SITE_DIR, 'content/site.json'))) });
+  const p2 = await newPage(ctx2);
+  p2.on('dialog', (d) => { dialogs.push(d.message()); return d.dismiss(); });
+  await p2.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p2.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  await publish(p2);
+  assert.equal(dialogs.length, 2, 'no new question');
+  await ctx2.close();
+});
+
+test('the editor remembers where you were and notices drafts that went stale', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  const services = await p.locator('#page-select option').evaluateAll((os) => os.findIndex((o) => o.textContent === 'Services'));
+  await p.selectOption('#page-select', String(services));
+  await p.click('.ed-rail button[data-tab="pages"]');
+  assert.equal(new URL(p.url()).hash, '#page=services&tab=pages');
+
+  // Make a draft, then pretend the live site was changed from another computer
+  await canvas.locator('.hero__title').first().click();
+  await p.keyboard.type(' draft');
+  await canvas.locator('.site-footer').click();
+  await p.waitForTimeout(700);
+  await p.evaluate(() => new Promise((resolve, reject) => {
+    const req = indexedDB.open('rts-editor', 1);
+    req.onsuccess = () => {
+      const store = req.result.transaction('kv', 'readwrite').objectStore('kv');
+      const get = store.get('draft');
+      get.onsuccess = () => { store.put({ ...get.result, base: 'a'.repeat(40) }, 'draft'); store.delete('known-bases'); };
+      store.transaction.oncomplete = resolve;
+      store.transaction.onerror = reject;
+    };
+  }));
+
+  await p.reload({ waitUntil: 'load' });
+  await canvas.locator('.hero__title').first().waitFor();
+  assert.equal(await p.locator('#page-select option:checked').innerText(), 'Services', 'same page after reload');
+  assert.ok(await p.locator('.ed-rail button[data-tab="pages"]').evaluate((b) => b.classList.contains('is-on')), 'same panel after reload');
+  await p.locator('.toast', { hasText: 'changed somewhere else' }).waitFor();
+
+  // Posts are remembered too
+  await p.click('.ed-rail button[data-tab="blog"]');
+  await p.locator('.post-row').first().click();
+  assert.match(new URL(p.url()).hash, /^#post=/);
+  await p.reload({ waitUntil: 'load' });
+  await p.locator('#panel h2', { hasText: /Edit (post|blurb)/ }).waitFor();
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('drafts and settings stay with their site; uploaded SVGs are cleaned', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  await p.evaluate(() => new Promise((resolve) => {
+    localStorage.setItem('rts-editor-github', JSON.stringify({ owner: 'someone', repo: 'other', branch: 'dev', token: '', site: 'https://other.example|someone/other' }));
+    const req = indexedDB.open('rts-editor', 1);
+    req.onsuccess = () => {
+      const tx = req.result.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put({ savedAt: Date.now(), json: JSON.stringify({ site: { name: 'Other site' }, pages: [{ title: 'Other home', sections: [] }] }), site: 'https://other.example|someone/other' }, 'draft');
+      tx.oncomplete = resolve;
+    };
+  }));
+  await p.reload({ waitUntil: 'load' });
+  await p.locator('.toast', { hasText: 'draft for another site (https://other.example) was set aside' }).waitFor();
+  assert.notEqual(await p.locator('#page-select option').first().innerText(), 'Other home', 'the other site’s draft is not loaded');
+  await p.click('#publish');
+  assert.equal(await p.locator('.ed-modal input[placeholder="GitHub user"]').inputValue(), 'Bessv2', 'another site’s repository is not used');
+  await p.click('.ed-modal__card header [data-close]');
+
+  // SVG uploads keep the drawing but lose scripts and event handlers
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10" onload="alert(1)"><script>alert(2)</script>'
+    + '<a xlink:href="javascript:alert(3)"><rect width="10" height="10" fill="#2563eb"/></a><foreignObject><div>x</div></foreignObject></svg>';
+  await p.click('.ed-rail button[data-tab="media"]');
+  const [chooser] = await Promise.all([p.waitForEvent('filechooser'), p.click('.p-head button:has-text("Upload")')]);
+  await chooser.setFiles({ name: 'logo.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg) });
+  await p.locator('.ed-panel .media-grid').first().locator('.media-tile').first().waitFor();
+  await p.waitForTimeout(300);
+  const stored = await p.evaluate(() => new Promise((resolve) => {
+    const req = indexedDB.open('rts-editor', 1);
+    req.onsuccess = () => { const g = req.result.transaction('kv').objectStore('kv').get('draft'); g.onsuccess = () => resolve(g.result.json); };
+  }));
+  const src = JSON.parse(stored).media.find((m) => m.name === 'logo.svg').src;
+  const clean = Buffer.from(src.split(',')[1], 'base64').toString();
+  assert.match(clean, /<rect/);
+  assert.doesNotMatch(clean, /script|onload|javascript:|foreignObject/i);
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });

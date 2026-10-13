@@ -50,12 +50,23 @@ function show(path, push = false, hops = 0) {
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
-// Keep site links inside the preview.
-app.addEventListener('click', (e) => {
-  const a = e.target.closest('a[href^="/"]');
-  if (!a || a.target === '_blank' || /\.(xml|json|txt)$/.test(a.getAttribute('href'))) return;
+// Keep site links inside the preview. The <base> points at the live site, so
+// in-page #links (and the skip link) are handled here too; files such as
+// images, the gallery lightbox and feed.xml are left alone.
+document.addEventListener('click', (e) => {
+  if (e.defaultPrevented) return;
+  const a = e.target.closest('a[href]');
+  if (!a || a.target === '_blank' || a.hasAttribute('data-lightbox')) return;
+  const href = a.getAttribute('href');
+  if (href.startsWith('#')) {
+    e.preventDefault();
+    document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView();
+    return;
+  }
+  if (!href.startsWith('/') || href.startsWith('//')) return;
+  const [path, hash] = href.split('#');
+  if (/\.[a-z0-9]{2,5}$/i.test(path.split('?')[0])) return;
   e.preventDefault();
-  const [path, hash] = a.getAttribute('href').split('#');
   show(path || '/', true);
   if (hash) document.getElementById(hash)?.scrollIntoView();
 });

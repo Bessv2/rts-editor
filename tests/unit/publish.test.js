@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractImages } from '../../assets/js/publish.js';
+import { extractImages, gitBlobSha } from '../../assets/js/publish.js';
 
 const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
@@ -15,4 +15,10 @@ test('uploaded images become files and are removed from the content', async () =
   assert.equal(out.media[0].src, path);
   assert.ok(!JSON.stringify(out).includes('data:image'));
   assert.equal(doc.site.logo, png, 'the editor copy keeps the original');
+});
+
+test('content ids match git’s', async () => {
+  // `printf 'hello\n' | git hash-object --stdin`
+  assert.equal(await gitBlobSha('hello\n'), 'ce013625030ba8dba906f756967f9e9ca394464a');
+  assert.equal(await gitBlobSha('é'), await gitBlobSha('\u00e9'));
 });
