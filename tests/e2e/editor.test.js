@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SITE_DIR = resolve(process.env.SITE_DIR || join(ROOT, 'site'));
@@ -52,8 +53,8 @@ before(async () => {
 after(async () => { await browser?.close(); site?.close(); editor?.close(); if (tmp) await rm(tmp, { recursive: true, force: true }); });
 
 // Fake GitHub API: records the committed tree and lets tests read committed files.
-async function mockGitHub(ctx) {
-  const tree = []; const blobs = [];
+async function mockGitHub(ctx, { contentSha } = {}) {
+  const tree = []; const blobs = []; const commits = [];
   await ctx.route('https://api.github.com/**', async (r) => {
     const path = new URL(r.request().url()).pathname.replace(/^\/repos\/[^/]+\/[^/]+/, '');
     const json = (o, status = 200) => r.fulfill({ status, contentType: 'application/json', body: JSON.stringify(o) });
@@ -62,13 +63,16 @@ async function mockGitHub(ctx) {
     if (path === '/git/blobs') { blobs.push(JSON.parse(r.request().postData())); return json({ sha: `b${blobs.length - 1}` }); }
     if (path === '/contents/generated.json') return r.fulfill({ status: 200, contentType: 'text/plain', body: JSON.stringify({ files: ['index.html', 'old-page/index.html'] }) });
     if (path === '/git/trees') { tree.push(...JSON.parse(r.request().postData()).tree); return json({ sha: 't1' }); }
-    if (path === '/git/commits') return json({ sha: 'c1c1c1c1', html_url: 'https://github.com/x' });
+    if (path === '/contents/content/site.json' && contentSha) return json({ sha: contentSha });
+    if (path === '/git/commits') { commits.push(1); return json({ sha: 'c1c1c1c1', html_url: 'https://github.com/x' }); }
     if (path === '/git/refs/heads/main') return json({});
     return json({ message: 'Not Found' }, 404);
   });
   const read = (path) => Buffer.from(blobs[Number(tree.find((t) => t.path === path).sha.slice(1))].content, 'base64').toString();
-  return { tree, read };
+  return { tree, read, commits };
 }
+
+const gitSha = (buf) => createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf])).digest('hex');
 
 async function publish(p) {
   await p.click('#publish');
@@ -280,6 +284,86 @@ test('pasting from Word or Google Docs keeps formatting; code and tip box button
   await canvas.locator('.post__body .callout--tip').waitFor();
   await p.click('#panel .md-tools button[title="Code block"]');
   await canvas.locator('.post__body pre.code').waitFor();
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('publishing over changes made somewhere else asks first', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const gh = await mockGitHub(ctx, { contentSha: 'f'.repeat(40) });
+  const p = await newPage(ctx);
+  const dialogs = [];
+  let accept = false;
+  p.on('dialog', (d) => { dialogs.push(d.message()); return accept ? d.accept() : d.dismiss(); });
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().click();
+  await p.keyboard.type(' (edited)');
+  await canvas.locator('.blk-services').first().click();
+  await p.click('#publish');
+  await p.fill('.ed-modal input[type=password]', 'github_pat_TEST');
+  await p.click('button:has-text("Publish now")');
+  await p.locator('.log .err', { hasText: 'Publishing cancelled' }).waitFor();
+  assert.match(dialogs[0], /changed somewhere else/);
+  assert.equal(gh.commits.length, 0, 'nothing is committed when cancelled');
+  accept = true;
+  await p.click('button:has-text("Publish now")');
+  await p.locator('.log .ok', { hasText: 'Done' }).waitFor();
+  assert.equal(gh.commits.length, 1);
+  assert.equal(dialogs.length, 2, 'asked once per publish attempt');
+  await ctx.close();
+
+  // No question when the repository still has the version the draft started from
+  const ctx2 = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  await mockGitHub(ctx2, { contentSha: gitSha(await readFile(join(SITE_DIR, 'content/site.json'))) });
+  const p2 = await newPage(ctx2);
+  p2.on('dialog', (d) => { dialogs.push(d.message()); return d.dismiss(); });
+  await p2.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p2.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  await publish(p2);
+  assert.equal(dialogs.length, 2, 'no new question');
+  await ctx2.close();
+});
+
+test('the editor remembers where you were and notices drafts that went stale', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  const services = await p.locator('#page-select option').evaluateAll((os) => os.findIndex((o) => o.textContent === 'Services'));
+  await p.selectOption('#page-select', String(services));
+  await p.click('.ed-rail button[data-tab="pages"]');
+  assert.equal(new URL(p.url()).hash, '#page=services&tab=pages');
+
+  // Make a draft, then pretend the live site was changed from another computer
+  await canvas.locator('.hero__title').first().click();
+  await p.keyboard.type(' draft');
+  await canvas.locator('.site-footer').click();
+  await p.waitForTimeout(700);
+  await p.evaluate(() => new Promise((resolve, reject) => {
+    const req = indexedDB.open('rts-editor', 1);
+    req.onsuccess = () => {
+      const store = req.result.transaction('kv', 'readwrite').objectStore('kv');
+      const get = store.get('draft');
+      get.onsuccess = () => { store.put({ ...get.result, base: 'a'.repeat(40) }, 'draft'); store.delete('known-bases'); };
+      store.transaction.oncomplete = resolve;
+      store.transaction.onerror = reject;
+    };
+  }));
+
+  await p.reload({ waitUntil: 'load' });
+  await canvas.locator('.hero__title').first().waitFor();
+  assert.equal(await p.locator('#page-select option:checked').innerText(), 'Services', 'same page after reload');
+  assert.ok(await p.locator('.ed-rail button[data-tab="pages"]').evaluate((b) => b.classList.contains('is-on')), 'same panel after reload');
+  await p.locator('.toast', { hasText: 'changed somewhere else' }).waitFor();
+
+  // Posts are remembered too
+  await p.click('.ed-rail button[data-tab="blog"]');
+  await p.locator('.post-row').first().click();
+  assert.match(new URL(p.url()).hash, /^#post=/);
+  await p.reload({ waitUntil: 'load' });
+  await p.locator('#panel h2', { hasText: /Edit (post|blurb)/ }).waitFor();
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });

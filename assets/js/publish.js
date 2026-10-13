@@ -12,6 +12,20 @@ function utf8ToBase64(str) {
   return btoa(bin);
 }
 
+// The id git gives a file's contents (the same "sha" the GitHub API reports),
+// so the editor can tell which published version a draft started from.
+export async function gitBlobSha(text) {
+  const body = enc.encode(text);
+  const head = enc.encode(`blob ${body.length}\0`);
+  const all = new Uint8Array(head.length + body.length);
+  all.set(head);
+  all.set(body, head.length);
+  const buf = await crypto.subtle.digest('SHA-1', all);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export class PublishCancelled extends Error {}
+
 async function hashOf(str) {
   const buf = await crypto.subtle.digest('SHA-256', enc.encode(str));
   return [...new Uint8Array(buf)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -79,7 +93,10 @@ export async function extractImages(doc) {
 // generated page (build.js). Pages that no longer exist are deleted.
 // buildSite/staleFiles come from the site's theme (theme-api.js), so pages are
 // always built by the code that is live on the site.
-export async function publishToGitHub({ owner, repo, branch, token, message, doc, origin, buildSite, staleFiles, log = () => {} }) {
+// base is the content/site.json sha the draft started from. If the repository
+// has a different one (published from another computer or by hand),
+// confirmOverwrite() decides whether to replace it.
+export async function publishToGitHub({ owner, repo, branch, token, message, doc, origin, buildSite, staleFiles, base, confirmOverwrite, log = () => {} }) {
   const api = createApi({ owner, repo, token });
   const ref = `/git/ref/heads/${encPath(branch)}`;
   log('Preparing content…');
@@ -87,6 +104,10 @@ export async function publishToGitHub({ owner, repo, branch, token, message, doc
   log(`Connecting to ${owner}/${repo} (${branch})…`);
   const head = await api(ref);
   const parent = await api(`/git/commits/${head.object.sha}`);
+  if (base && confirmOverwrite) {
+    const current = await api(`/contents/content/site.json?ref=${head.object.sha}`, { allow404: true });
+    if (current?.sha && current.sha !== base && !(await confirmOverwrite())) throw new PublishCancelled('Publishing cancelled. Nothing was changed.');
+  }
   const upload = async (path, content, encoding = 'utf8') => {
     const blob = await api('/git/blobs', { method: 'POST', body: encoding === 'base64' ? { content, encoding } : { content: utf8ToBase64(content), encoding: 'base64' } });
     return { path, mode: '100644', type: 'blob', sha: blob.sha };
@@ -98,7 +119,8 @@ export async function publishToGitHub({ owner, repo, branch, token, message, doc
     tree.push(await upload(path, b64, 'base64'));
   }
   log('Saving content…');
-  tree.push(await upload('content/site.json', `${JSON.stringify(out, null, 2)}\n`));
+  const content = await upload('content/site.json', `${JSON.stringify(out, null, 2)}\n`);
+  tree.push(content);
 
   log('Building pages…');
   const site = buildSite(out, { origin });
@@ -111,11 +133,11 @@ export async function publishToGitHub({ owner, repo, branch, token, message, doc
   log(`${site.files.size} files built.`);
 
   const newTree = await api('/git/trees', { method: 'POST', body: { base_tree: parent.tree.sha, tree } });
-  if (newTree.sha === parent.tree.sha) { log('No changes since the last publish.', 'ok'); return { unchanged: true, published: out }; }
+  if (newTree.sha === parent.tree.sha) { log('No changes since the last publish.', 'ok'); return { unchanged: true, published: out, contentSha: content.sha }; }
   const commit = await api('/git/commits', { method: 'POST', body: { message, tree: newTree.sha, parents: [head.object.sha] } });
   await api(ref, { method: 'PATCH', body: { sha: commit.sha } });
   log(`Committed ${commit.sha.slice(0, 7)}.`, 'ok');
-  return { commitUrl: commit.html_url, published: out };
+  return { commitUrl: commit.html_url, published: out, contentSha: content.sha };
 }
 
 // Past published versions of the site content.

@@ -1,5 +1,5 @@
 // Visual site editor. Edits content/site.json through a live canvas.
-import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft } from './publish.js';
+import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft, gitBlobSha, PublishCancelled } from './publish.js';
 import { kv, versions } from './store.js';
 import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
 import { htmlToMarkdown, hasFormatting } from './html-to-md.js';
@@ -42,6 +42,7 @@ const state = {
   doc: null, page: 0, sel: null, tab: 'add', device: 'desktop',
   history: [], future: [], snap: '', published: '',
   open: new Set(), commitTimer: 0, ghToken: '', clipboard: null, post: null,
+  base: '', // content/site.json version (git sha) this draft started from
 };
 
 // ---------------------------------------------------------------------------
@@ -100,8 +101,19 @@ function flushCommit() { if (state.commitTimer) commit(); }
 
 function saveDraft(s = JSON.stringify(state.doc)) {
   try { localStorage.removeItem(DRAFT_KEY); } catch { /* legacy draft location */ }
-  const p = s === state.published ? kv.del('draft') : kv.set('draft', { savedAt: Date.now(), json: s });
+  const p = s === state.published ? kv.del('draft') : kv.set('draft', { savedAt: Date.now(), json: s, base: state.base });
   return p.catch(() => toast('Could not save your draft in this browser. Publish or download a backup to keep your work.', { error: true }));
+}
+
+// Versions of the live content this browser has started from or published,
+// so an old copy served from the site's cache isn't mistaken for someone else's change.
+async function setBase(sha) {
+  if (!sha) return;
+  state.base = sha;
+  try {
+    const known = (await kv.get('known-bases')) || [];
+    if (!known.includes(sha)) await kv.set('known-bases', [sha, ...known].slice(0, 30));
+  } catch { /* IndexedDB unavailable */ }
 }
 
 function restore(snap) {
@@ -744,6 +756,31 @@ function setTab(tab) {
   state.tab = tab;
   $$('.ed-rail button').forEach((b) => b.classList.toggle('is-on', b.dataset.tab === tab));
   renderPanel();
+  syncUrl();
+}
+
+// The address bar remembers the page, post and panel (#page=services&tab=pages),
+// so reloading or bookmarking the editor comes back to the same place.
+const TABS = ['add', 'layers', 'pages', 'blog', 'media', 'theme', 'site', 'history', 'checkup', 'help'];
+function syncUrl() {
+  if (!state.doc) return;
+  const q = new URLSearchParams();
+  if (state.post) q.set('post', state.post);
+  else if (state.page > 0) q.set('page', page().slug || String(state.page));
+  if (state.tab !== 'add' && !(state.post && state.tab === 'blog')) q.set('tab', state.tab);
+  const hash = q.toString();
+  if (location.hash.slice(1) !== hash) history.replaceState(null, '', hash ? `#${hash}` : location.pathname + location.search);
+}
+function restoreUrl() {
+  const q = new URLSearchParams(location.hash.slice(1));
+  const slug = q.get('page');
+  const i = slug ? state.doc.pages.findIndex((p, n) => n > 0 && (p.slug === slug || String(n) === slug)) : -1;
+  if (i > 0) state.page = i;
+  const tab = q.get('tab');
+  if (TABS.includes(tab) && (tab !== 'checkup' || has('audit'))) state.tab = tab;
+  const post = q.get('post');
+  if (post && findPost(post)) { state.post = post; state.tab = 'blog'; }
+  $$('.ed-rail button').forEach((b) => b.classList.toggle('is-on', b.dataset.tab === state.tab));
 }
 
 function renderPanel() {
@@ -850,6 +887,7 @@ function goToPage(i) {
   renderInspector();
   renderPanel();
   updateTopbar();
+  syncUrl();
 }
 
 function panelPages(box) {
@@ -1170,7 +1208,9 @@ function importJSON() {
 async function resetToPublished() {
   if (!confirm('Discard your draft and load the live version? You can undo this.')) return;
   try {
-    state.doc = migrate(await fetchPublished());
+    const live = await fetchPublished();
+    state.doc = migrate(live.doc);
+    await setBase(live.sha);
     state.page = 0; state.sel = null;
     commit(); refreshAll();
     toast('Loaded the live version', { action: 'Undo', onAction: undo });
@@ -1180,7 +1220,8 @@ async function resetToPublished() {
 async function fetchPublished() {
   const res = await fetch(`${SITE}/content/site.json?v=${Date.now()}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Could not load content/site.json (${res.status})`);
-  return res.json();
+  const text = await res.text();
+  return { doc: JSON.parse(text), sha: await gitBlobSha(text).catch(() => '') };
 }
 
 function loadGH() { try { return { ...DEFAULT_REPO, ...JSON.parse(localStorage.getItem(GH_KEY) || '{}') }; } catch { return { ...DEFAULT_REPO }; } }
@@ -1220,7 +1261,10 @@ function openPublish() {
     log.replaceChildren();
     for (const [from, to] of moved) write(`${from} now forwards to ${to}.`);
     try {
-      const r = await publishToGitHub({ ...cfg, message: msg.value.trim() || 'Update site content', doc: state.doc, log: write, origin: SITE, buildSite, staleFiles });
+      const r = await publishToGitHub({ ...cfg, message: msg.value.trim() || 'Update site content', doc: state.doc, log: write, origin: SITE, buildSite, staleFiles,
+        base: state.base,
+        confirmOverwrite: () => confirm('Your site was changed somewhere else (another computer, the old editor or GitHub) after you started editing.\n\nPublish anyway and replace those changes with yours? Choose Cancel to keep them; you can open them from History → Published versions.') });
+      await setBase(r.contentSha);
       state.published = JSON.stringify(state.doc);
       saveDraft();
       addVersion(`Published: ${msg.value.trim() || 'Update site content'}`).catch(() => {});
@@ -1229,7 +1273,7 @@ function openPublish() {
       if (r.commitUrl) log.append(el('div', {}, el('a', { href: r.commitUrl, target: '_blank', rel: 'noopener', style: 'color:#93c5fd' }, 'View commit on GitHub')));
       toast('Published! Changes go live in about a minute.');
     } catch (e) {
-      write(`Error: ${e.message}`, 'err');
+      write(e instanceof PublishCancelled ? e.message : `Error: ${e.message}`, 'err');
     } finally { go.disabled = false; }
   });
 
@@ -1334,6 +1378,7 @@ function openPost(id) {
   renderCanvas({ keepScroll: false });
   renderInspector();
   renderPanel();
+  syncUrl();
 }
 
 function closePost() {
@@ -1342,6 +1387,7 @@ function closePost() {
   renderCanvas({ keepScroll: false });
   renderInspector();
   renderPanel();
+  syncUrl();
 }
 
 function deletePost(id) {
@@ -1762,11 +1808,11 @@ function openModal(title, content) {
 function closeModal() { $('#modal').hidden = true; }
 $$('#modal [data-close]').forEach((n) => n.addEventListener('click', closeModal));
 
-function toast(text, { action, onAction, error = false } = {}) {
+function toast(text, { action, onAction, error = false, duration } = {}) {
   const t = el('div', { class: `toast${error ? ' is-err' : ''}` }, text);
   if (action) t.append(el('button', { type: 'button', onclick: () => { onAction(); t.remove(); } }, action));
   $('#toasts').append(t);
-  setTimeout(() => t.remove(), action ? 6000 : 3200);
+  setTimeout(() => t.remove(), duration || (action ? 6000 : 3200));
 }
 
 function updateTopbar() {
@@ -1815,26 +1861,38 @@ async function boot() {
   hydrateIcons();
   $$('a[data-site-link]').forEach((a) => { a.href = `${SITE}/`; });
   let published = null;
-  try { published = await fetchPublished(); } catch (e) { toast(e.message, { error: true }); }
+  let publishedSha = '';
+  try { ({ doc: published, sha: publishedSha } = await fetchPublished()); } catch (e) { toast(e.message, { error: true }); }
   let draft = null;
+  let known = [];
   try {
     const saved = await kv.get('draft');
-    if (saved?.json) draft = { doc: JSON.parse(saved.json) };
+    if (saved?.json) draft = { doc: JSON.parse(saved.json), base: saved.base || '' };
+    known = (await kv.get('known-bases')) || [];
   } catch { /* IndexedDB unavailable */ }
   if (!draft) { try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { /* ignore */ } }
   const safeMigrate = (d) => { try { return d ? migrate(d) : null; } catch (err) { toast(err.message, { error: true }); return null; } };
   published = safeMigrate(published);
-  state.doc = safeMigrate(draft?.doc) || published;
+  const fromDraft = safeMigrate(draft?.doc);
+  state.doc = fromDraft || published;
   if (!state.doc) return;
   state.published = published ? JSON.stringify(published) : '';
   state.snap = JSON.stringify(state.doc);
+  // A draft remembers which live version it started from (older drafts don't know).
+  if (fromDraft) state.base = draft.base || '';
+  else await setBase(publishedSha);
+  const changedElsewhere = draft?.base && publishedSha && publishedSha !== draft.base && !known.includes(publishedSha);
+  restoreUrl();
 
   await initCanvas();
   const checkupTab = $('.ed-rail [data-tab="checkup"]');
   if (checkupTab) checkupTab.hidden = !has('audit');
   refreshAll();
   refreshChecks();
-  if (draft?.doc && state.snap !== state.published) toast('Restored your unpublished draft', { action: 'Discard', onAction: resetToPublished });
+  if (changedElsewhere && state.snap !== state.published) {
+    toast('Your site was changed somewhere else after you started this draft. Publishing the draft would replace those changes.', { action: 'Load live version', onAction: resetToPublished, duration: 20000 });
+  } else if (draft?.doc && state.snap !== state.published) toast('Restored your unpublished draft', { action: 'Discard', onAction: resetToPublished });
+  syncUrl();
 
   $$('.ed-rail button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
   $$('#device-toggle button').forEach((b) => b.addEventListener('click', () => setDevice(b.dataset.device)));
