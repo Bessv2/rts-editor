@@ -34,6 +34,15 @@ editor.roetechnologyservices.com          roetechnologyservices.com
   search engines", redirects) appear in the editor only when the site's `theme-api.js` lists them
   in `FEATURES`, so the editor keeps working with an older site.
 
+### Checkup
+
+The **Checkup** tab runs the site's own checks (`audit.js` in the site repo) as you work. It finds
+broken links, buttons without links, pages without a main headline, leftover sample text
+(underlined on the page), missing search descriptions, a contact form with nowhere to send
+messages, and more. Each item has a **Show me** button that jumps to the right page, section or
+setting. The Publish window lists anything worth fixing; problems marked “Must fix” block
+publishing until they are fixed.
+
 ### Page options
 
 - **Show on website** (Pages tab) takes a page off the site, or keeps a new one off until it is

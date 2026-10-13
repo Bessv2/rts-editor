@@ -92,6 +92,7 @@ function commit() {
   state.snap = s;
   saveDraft(s);
   updateTopbar();
+  refreshChecksSoon();
 }
 function commitSoon() { clearTimeout(state.commitTimer); state.commitTimer = setTimeout(commit, 500); }
 function flushCommit() { if (state.commitTimer) commit(); }
@@ -163,6 +164,7 @@ function renderCanvas({ keepScroll = true } = {}) {
   app.innerHTML = post ? renderPostPage(state.doc, post, { preview: true }) : renderPage(state.doc, state.page, { edit: true });
   makeEditable(app);
   decorateSelection();
+  markSamples();
   d.defaultView.scrollTo(0, keepScroll ? y : 0);
 }
 
@@ -178,6 +180,7 @@ function refreshSection(id) {
   old.replaceWith(fresh);
   makeEditable(fresh);
   decorateSelection();
+  markSamples();
 }
 
 function applyTheme() {
@@ -605,7 +608,7 @@ function fieldControl(f, path, val, change, target, onRender) {
         if (!f0) return;
         try { const src = await imageToDataURL(f0); addToMedia(src, f0.name); change(path, src, { structural: true }); } catch (err) { toast(err.message, { error: true }); }
       } });
-      const url = el('input', { class: 'in', type: 'text', placeholder: 'or paste an image URL', value: String(val || '').startsWith('data:') ? '' : (val || ''),
+      const url = el('input', { class: 'in', type: 'text', placeholder: 'or paste an image URL', 'data-path': path, value: String(val || '').startsWith('data:') ? '' : (val || ''),
         onchange: (e) => change(path, e.target.value.trim(), { structural: true }) });
       put(wrap, el('span', { class: 'f__label' }, f.label), el('div', { class: 'img-field' }, preview,
         el('div', { class: 'img-field__btns' },
@@ -713,7 +716,7 @@ function renderPanel() {
   const box = $('#panel');
   const scroll = box.scrollTop;
   box.replaceChildren();
-  ({ add: panelAdd, layers: panelLayers, pages: panelPages, media: panelMedia, blog: panelBlog, theme: panelTheme, site: panelSite, history: panelHistory, help: panelHelp })[state.tab](box);
+  ({ add: panelAdd, layers: panelLayers, pages: panelPages, media: panelMedia, blog: panelBlog, theme: panelTheme, site: panelSite, history: panelHistory, checkup: panelCheckup, help: panelHelp })[state.tab](box);
   box.scrollTop = scroll;
 }
 
@@ -850,8 +853,8 @@ function panelPages(box) {
           if (e.target.checked) p.noindex = true; else delete p.noindex;
           commit(); renderPanel();
         } })), el('p', { class: 'f__help' }, i === 0 && p.noindex ? 'Your home page won’t appear in Google and other search engines.' : 'The page stays on your site, but Google and others are asked not to list it.')) : null,
-        el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); } })),
-        el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); } }), { value: p.seoDescription || '' })),
+        el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', 'data-path': 'seoTitle', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); } })),
+        el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, 'data-path': 'seoDescription', placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); } }), { value: p.seoDescription || '' })),
         el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i <= 1, title: i === 0 ? 'Home stays first' : 'Move up', onclick: () => movePage(i, -1) }, ico('chevron-up')),
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i === 0 || i === state.doc.pages.length - 1, title: 'Move down', onclick: () => movePage(i, 1) }, ico('chevron-down')),
@@ -1160,14 +1163,25 @@ function openPublish() {
   const log = el('div', { class: 'log', hidden: true });
   const go = el('button', { type: 'button', class: 'ed-btn ed-btn--primary' }, ico('send'), 'Publish now');
   const write = (t, cls) => { log.hidden = false; log.append(el('div', { class: cls || '' }, t)); log.scrollTop = log.scrollHeight; };
+  const found = publishChecks();
+  const errors = found.filter((c) => c.level === 'error');
+  const warnings = found.filter((c) => c.level === 'warning');
+  const shown = [...errors, ...warnings];
+  const checkBox = shown.length ? el('div', { class: `pub-checks${errors.length ? ' has-err' : ''}` },
+    el('strong', {}, errors.length
+      ? `${errors.length} problem${errors.length === 1 ? '' : 's'} must be fixed before you can publish`
+      : `${warnings.length} thing${warnings.length === 1 ? '' : 's'} worth checking first (you can still publish)`),
+    checkList(shown.slice(0, 5)),
+    shown.length > 5 ? el('button', { type: 'button', class: 'pub-checks__all', onclick: () => { closeModal(); setTab('checkup'); } }, `See all ${shown.length} in Checkup`) : null) : null;
+  if (errors.length) go.disabled = true;
   go.addEventListener('click', async () => {
     const cfg = { owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', token: token.value.trim() };
     if (!cfg.owner || !cfg.repo || !cfg.token) { write('Fill in repository and token first.', 'err'); return; }
     rememberGH(cfg, remember.checked);
     const moved = keepAllOldAddresses();
     if (moved.length) commit();
-    const problems = validate(state.doc);
-    if (problems.length) { log.replaceChildren(); problems.forEach((pr) => write(pr, 'err')); write('Fix these, then publish again.', 'err'); return; }
+    const blocking = publishChecks().filter((c) => c.level === 'error');
+    if (blocking.length) { log.replaceChildren(); blocking.forEach((c) => write(c.message, 'err')); write('Fix these, then publish again.', 'err'); return; }
     go.disabled = true;
     log.replaceChildren();
     for (const [from, to] of moved) write(`${from} now forwards to ${to}.`);
@@ -1186,6 +1200,7 @@ function openPublish() {
   });
 
   const ghPane = el('div', {},
+    checkBox,
     el('p', {}, 'Publishing saves your changes to your website’s GitHub repository. GitHub Pages then updates the live site automatically.'),
     el('details', { class: 'note' }, el('summary', { style: 'cursor:pointer;font-weight:600' }, 'First time? Create an access token'),
       el('ol', { class: 'steps-mini', style: 'margin-top:8px' },
@@ -1544,6 +1559,116 @@ function panelHistory(box) {
 }
 
 // ---------------------------------------------------------------------------
+// Checkup: the site's own rules (audit.js in the site repo) for problems to
+// fix before publishing. Errors block publishing; warnings and tips don't.
+const LEVEL_LABEL = { error: 'Must fix', warning: 'Worth fixing', tip: 'Suggestions' };
+let checks = [];
+let checkTimer = 0;
+
+function runChecks() {
+  if (!has('audit')) return [];
+  try { checks = theme.audit(state.doc); } catch (err) { console.error(err); checks = []; }
+  return checks;
+}
+
+// Without the site's checkup (older theme), only content errors block publishing.
+function publishChecks() {
+  return has('audit') ? runChecks() : validate(state.doc).map((message) => ({ level: 'error', code: 'invalid', message, where: { kind: 'site' } }));
+}
+
+function refreshChecksSoon() { if (has('audit')) { clearTimeout(checkTimer); checkTimer = setTimeout(refreshChecks, 600); } }
+function refreshChecks() {
+  if (!has('audit')) return;
+  runChecks();
+  const n = checks.filter((c) => c.level !== 'tip').length;
+  const badge = $('.ed-rail [data-tab="checkup"] .ed-rail__badge');
+  if (badge) {
+    badge.hidden = !n;
+    badge.textContent = String(n);
+    badge.classList.toggle('is-err', checks.some((c) => c.level === 'error'));
+  }
+  markSamples();
+  if (state.tab === 'checkup') renderPanel();
+}
+
+// Underline leftover sample text on the canvas so it is easy to spot.
+function markSamples() {
+  const d = cdoc();
+  if (!d?.getElementById('app')) return;
+  $$('.ed-sample', d).forEach((n) => { n.classList.remove('ed-sample'); n.removeAttribute('title'); });
+  if (state.post) return;
+  for (const c of checks) {
+    if (c.code !== 'sample-text' || c.where.page !== state.page) continue;
+    const sec = d.querySelector(`[data-section-id="${CSS.escape(c.where.section)}"]`);
+    for (const f of c.where.fields || []) {
+      const n = sec?.querySelector(`[data-edit="${CSS.escape(f)}"]`);
+      if (n) { n.classList.add('ed-sample'); n.title = 'Sample text: replace it with your own words'; }
+    }
+  }
+}
+
+function checkList(items) {
+  return el('ul', { class: 'checks' }, items.map((c) => el('li', { class: `check check--${c.level}` },
+    el('span', { class: 'check__icon' }, ico(c.level === 'tip' ? 'bulb' : 'alert')),
+    el('span', { class: 'check__msg' }, c.message),
+    el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => showProblem(c) }, 'Show me'))));
+}
+
+function panelCheckup(box) {
+  box.append(panelHead('Checkup', 'check-circle', el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => { flushCommit(); refreshChecks(); renderPanel(); } }, ico('refresh'), 'Check again')));
+  const body = el('div', { class: 'p-body' });
+  const list = runChecks();
+  if (!list.length) {
+    body.append(el('div', { class: 'empty' }, el('span', { class: 'empty__icon' }, ico('check-circle')), el('h3', {}, 'All clear'), el('p', {}, 'No problems found on any page, post or setting.')));
+  } else {
+    body.append(el('p', { class: 'p-hint' }, 'Every page, post and setting is checked as you work. Problems under “Must fix” stop publishing until they are fixed.'));
+    for (const level of ['error', 'warning', 'tip']) {
+      const items = list.filter((c) => c.level === level);
+      if (items.length) body.append(el('p', { class: 'p-sub' }, `${LEVEL_LABEL[level]} (${items.length})`), checkList(items));
+    }
+  }
+  box.append(body);
+}
+
+// Takes the editor to the page, section, post or setting a problem is about.
+function showProblem(c) {
+  const w = c.where || {};
+  closeModal();
+  if (w.kind === 'post' && findPost(w.post)) { openPost(w.post); focusField('#panel', w.field); return; }
+  if (w.kind === 'page' && state.doc.pages[w.page]) {
+    if (w.page !== state.page || state.post) goToPage(w.page);
+    if (w.section && findSection(w.section)) {
+      const item = String(w.field || '').match(/^(.+?)\.(\d+)\./);
+      if (item) state.open.add(`${w.section}:${item[1]}.${item[2]}`);
+      select(w.section, { scroll: true });
+      setTimeout(() => scrollToSection(w.section, true), 40);
+      focusField('#inspector', w.field);
+    } else {
+      setTab('pages');
+      focusField('#panel', w.field);
+    }
+    return;
+  }
+  if (c.code === 'invalid') { setTab(/^Post/.test(c.message) ? 'blog' : /redirect/i.test(c.message) ? 'site' : 'pages'); return; }
+  if (['headerCta', 'tagline', 'footerText'].includes(w.field)) { select('__header', { scroll: true }); focusField('#inspector', w.field); return; }
+  setTab('site');
+  if (w.field === 'redirects') { setTimeout(() => $('#panel .redirect-add')?.scrollIntoView({ block: 'center' }), 40); return; }
+  focusField('#panel', w.field);
+}
+
+function focusField(root, field) {
+  if (!field) return;
+  setTimeout(() => {
+    const n = $(`${root} [data-path="${CSS.escape(field)}"]`) || $(`${root} [data-path^="${CSS.escape(`${field}.`)}"]`);
+    if (!n) return;
+    n.scrollIntoView({ block: 'center' });
+    n.focus({ preventScroll: true });
+    n.classList.add('ed-flash-field');
+    setTimeout(() => n.classList.remove('ed-flash-field'), 1600);
+  }, 60);
+}
+
+// ---------------------------------------------------------------------------
 // Find & replace across all pages and site settings
 const NON_TEXT = new Set(['id', 'type', 'icon', 'image', 'bgImage', 'logo', 'logoIcon', 'panelIcon', 'favicon', 'shareImage', 'href', 'link', 'src', 'bg', 'pad',
   'layout', 'side', 'columns', 'style', 'ratio', 'width', 'height', 'align', 'overlay', 'anchor', 'headerStyle', 'formEndpoint', 'slug', 'url', 'kind', 'date', 'show', 'limit']);
@@ -1671,7 +1796,10 @@ async function boot() {
   state.snap = JSON.stringify(state.doc);
 
   await initCanvas();
+  const checkupTab = $('.ed-rail [data-tab="checkup"]');
+  if (checkupTab) checkupTab.hidden = !has('audit');
   refreshAll();
+  refreshChecks();
   if (draft?.doc && state.snap !== state.published) toast('Restored your unpublished draft', { action: 'Discard', onAction: resetToPublished });
 
   $$('.ed-rail button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));

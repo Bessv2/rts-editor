@@ -193,6 +193,47 @@ test('page options: unpublish, hide from search engines, renamed pages keep thei
   await ctx.close();
 });
 
+test('checkup finds problems, blocks publishing on errors and shows where they are', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('audit')) { t.skip('the site has no checkup yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  const tab = p.locator('.ed-rail button[data-tab="checkup"]');
+  assert.ok(await tab.isVisible(), 'Checkup tab is shown when the site supports it');
+  assert.ok(await tab.locator('.ed-rail__badge').isHidden(), 'the published site has nothing to fix');
+
+  // A new section with sample text is flagged and underlined on the canvas
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.click('.block-card:has-text("Services grid")');
+  await tab.locator('.ed-rail__badge').waitFor();
+  await canvas.locator('.ed-sample').first().waitFor();
+
+  // Removing every way the contact form can send messages is an error that blocks publishing
+  await p.click('.ed-rail button[data-tab="site"]');
+  await p.fill('#panel [data-path="email"]', '');
+  await p.fill('#panel [data-path="formEndpoint"]', '');
+  await p.click('#publish');
+  await p.locator('.pub-checks.has-err').waitFor();
+  assert.match(await p.locator('.pub-checks').innerText(), /contact form has nowhere to send messages/);
+  assert.ok(await p.locator('button:has-text("Publish now")').isDisabled());
+  await p.locator('.pub-checks .check--error button:has-text("Show me")').click();
+  await p.waitForFunction(() => document.activeElement?.dataset.path === 'email');
+  await p.fill('#panel [data-path="email"]', 'help@example.com');
+
+  // The Checkup tab lists the sample text; Show me selects that section
+  await tab.click();
+  await p.locator('#panel .check--warning', { hasText: 'sample text' }).waitFor();
+  assert.equal(await p.locator('#panel .check--error').count(), 0, 'the error is gone once an email is set');
+  await p.locator('#panel .check--warning', { hasText: 'sample text' }).locator('button').click();
+  await canvas.locator('.blk-services.is-selected').last().waitFor();
+  assert.match(await p.locator('#inspector .p-head').innerText(), /Services grid/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('a foreign script cannot run in the editor', async () => {
   const ctx = await browser.newContext();
   const p = await ctx.newPage();
