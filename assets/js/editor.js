@@ -218,7 +218,7 @@ function decorateSelection() {
   node.classList.add('is-selected');
   const chip = d.createElement('div');
   chip.className = 'ed-chip';
-  chip.textContent = node.dataset.label;
+  chip.textContent = (!isChrome(state.sel) && findSection(state.sel)?.label) || node.dataset.label;
   node.append(chip);
   if (isChrome(state.sel)) return;
   const i = sections().findIndex((s) => s.id === state.sel);
@@ -472,6 +472,14 @@ function renderInspector() {
       el('button', { class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show on live site' : 'Hide on live site', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
       el('button', { class: 'ed-icon-btn ed-icon-btn--sm', title: 'Duplicate', onclick: () => runTool('duplicate', sec.id) }, ico('copy')),
       el('button', { class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Delete', onclick: () => runTool('delete', sec.id) }, ico('trash')))));
+  // A name only the editor shows, so sections are easy to tell apart (“Spring promo”).
+  box.append(el('div', { class: 'f sec-name' }, el('label', {}, 'Section name ', el('small', {}, '(only you see this)')),
+    el('input', { class: 'in', 'data-path': '__label', value: sec.label || '', placeholder: block.label, maxlength: 60, oninput: (e) => {
+      if (e.target.value.trim()) sec.label = e.target.value; else delete sec.label;
+      commitSoon();
+      decorateSelection();
+      if (state.tab === 'layers') renderPanel();
+    } })));
   const groups = [['Content', block.fields, true], ['Section style', STYLE_FIELDS, true]];
   for (const [title, fields, open] of groups) {
     const inner = el('div');
@@ -889,7 +897,7 @@ function panelLayers(box) {
     },
     el('span', { class: 'layer__grip' }, ico('grip')),
     el('span', { class: 'layer__icon' }, ico(b.icon)),
-    el('span', { class: 'layer__txt' }, el('strong', {}, b.label), el('small', {}, sectionSummary(sec))),
+    el('span', { class: 'layer__txt' }, el('strong', {}, sec.label || b.label), el('small', {}, sec.label ? b.label : sectionSummary(sec))),
     el('span', { class: 'layer__actions' },
       el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show' : 'Hide', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
       el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Delete', onclick: () => runTool('delete', sec.id) }, ico('trash'))));
@@ -928,6 +936,13 @@ function panelPages(box) {
     if (cur) {
       const b = el('div', { class: 'page-item__body' });
       const upd = (rerender = true) => { commitSoon(); if (rerender) renderCanvas(); updateTopbar(); };
+      const preview = el('div', { class: 'seo-preview' });
+      const paintPreview = () => preview.replaceChildren(...previewCards(p, i));
+      paintPreview();
+      const shareBox = el('div');
+      if (has('page-share-image')) {
+        renderFields(shareBox, [{ key: 'shareImage', label: 'Share image for this page', type: 'image', help: 'Shown when this page is shared on social media or in messages. Leave empty to use the site’s share image. 1200×630 works best.' }], p, () => {}, '', renderPanel);
+      }
       b.append(
         el('div', { class: 'f', style: 'margin-top:10px' }, el('label', {}, 'Page name'), el('input', { class: 'in', value: p.title, oninput: (e) => {
           // Once a page is live, renaming it no longer changes its address.
@@ -950,8 +965,10 @@ function panelPages(box) {
           if (e.target.checked) p.noindex = true; else delete p.noindex;
           commit(); renderPanel();
         } })), el('p', { class: 'f__help' }, i === 0 && p.noindex ? 'Your home page won’t appear in Google and other search engines.' : 'The page stays on your site, but Google and others are asked not to list it.')) : null,
-        el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', 'data-path': 'seoTitle', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); } })),
-        el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, 'data-path': 'seoDescription', placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); } }), { value: p.seoDescription || '' })),
+        el('div', { class: 'f' }, el('label', {}, 'Page title'), el('input', { class: 'in', 'data-path': 'seoTitle', value: p.seoTitle || '', placeholder: `${p.title} | ${state.doc.site.name}`, oninput: (e) => { p.seoTitle = e.target.value; upd(false); paintPreview(); } })),
+        el('div', { class: 'f' }, el('label', {}, 'Description'), Object.assign(el('textarea', { rows: 3, 'data-path': 'seoDescription', placeholder: 'One or two sentences that describe this page.', oninput: (e) => { p.seoDescription = e.target.value; upd(false); paintPreview(); } }), { value: p.seoDescription || '' })),
+        shareBox,
+        preview,
         el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i <= 1, title: i === 0 ? 'Home stays first' : 'Move up', onclick: () => movePage(i, -1) }, ico('chevron-up')),
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i === 0 || i === state.doc.pages.length - 1, title: 'Move down', onclick: () => movePage(i, 1) }, ico('chevron-down')),
@@ -1012,6 +1029,28 @@ function keepAllOldAddresses() {
   state.doc.pages.forEach((p, i) => { if (i > 0) { const old = keepOldAddress('page', p.id, pageHref(p, i), { quiet: true }); if (old) moved.push([old, pageHref(p, i)]); } });
   (state.doc.posts || []).forEach((p) => { const to = `/${POSTS_BASE}/${p.slug}/`; const old = keepOldAddress('post', p.id, to, { quiet: true }); if (old) moved.push([old, to]); });
   return moved;
+}
+
+// What a page may look like in Google results and when its link is shared.
+function previewCards(p, i) {
+  const s = state.doc.site;
+  let host = '';
+  try { host = new URL(s.url || SITE).host; } catch { host = new URL(SITE).host; }
+  const cut = (t, n) => { const v = String(t || '').replace(/\s+/g, ' ').trim(); return v.length > n ? `${v.slice(0, n - 1)}…` : v; };
+  const path = pageHref(p, i).replace(/^\/|\/$/g, '');
+  const title = p.seoTitle || (i === 0 ? s.name : `${p.title} | ${s.name}`);
+  const desc = p.seoDescription || s.description || '';
+  const img = p.shareImage || s.shareImage;
+  return [
+    el('p', { class: 'p-sub' }, 'How it may look on Google'),
+    el('div', { class: 'serp' }, el('small', {}, path ? `${host} › ${path.split('/').join(' › ')}` : host), el('strong', {}, cut(title, 60)),
+      el('p', {}, cut(desc, 160) || 'Add a description so search engines show your own words here.')),
+    el('p', { class: 'p-sub' }, 'When the link is shared'),
+    el('div', { class: 'share-card' },
+      img ? el('div', { class: 'share-card__img', style: `background-image:url("${String(siteAsset(img)).replace(/["\\]/g, encodeURIComponent)}")` })
+        : el('div', { class: 'share-card__img is-empty' }, 'No share image yet'),
+      el('div', { class: 'share-card__body' }, el('small', {}, host.toUpperCase()), el('strong', {}, cut(title, 70)), desc ? el('p', {}, cut(desc, 110)) : null)),
+  ];
 }
 
 function uniqueSlug(base) {
@@ -1146,6 +1185,7 @@ function panelSite(box) {
   ], s, () => renderCanvas(), '', renderPanel);
   body.append(el('p', { class: 'p-sub' }, 'Social links'), el('p', { class: 'p-hint' }, 'Shown as icons in the footer. Leave empty to hide.'));
   renderFields(body, SOCIAL.map(([k, l]) => ({ key: `social.${k}`, label: l, type: 'text' })), s, () => renderCanvas(), '', renderPanel);
+  if (has('verification')) panelSearchEngines(body, s);
   body.append(el('p', { class: 'p-sub' }, 'Branding & sharing'));
   renderFields(body, [
     { key: 'favicon', label: 'Browser tab icon', type: 'image', help: 'A square image, at least 64×64.' },
@@ -1160,6 +1200,27 @@ function panelSite(box) {
       el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: importJSON }, ico('upload'), 'Restore from file'),
       el('button', { type: 'button', class: 'ed-btn ed-btn--block ed-btn--danger', onclick: resetToPublished }, ico('refresh'), 'Discard draft (load live version)')));
   box.append(body);
+}
+
+const LANGUAGES = [['en', 'English'], ['en-US', 'English (United States)'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['it', 'Italian'], ['zh', 'Chinese'], ['vi', 'Vietnamese'], ['ko', 'Korean'], ['ar', 'Arabic']];
+
+function panelSearchEngines(body, s) {
+  const langs = LANGUAGES.some(([v]) => v === (s.lang || 'en')) ? LANGUAGES : [...LANGUAGES, [s.lang, s.lang]];
+  body.append(el('p', { class: 'p-sub' }, 'Search engines'));
+  renderFields(body, [{ key: 'lang', label: 'Site language', type: 'select', options: langs, help: 'Helps search engines and screen readers.' }], s, () => {}, '', renderPanel);
+  // Accepts the bare code or the whole <meta> tag that Google or Bing shows.
+  const code = (key, label, help) => el('div', { class: 'f' }, el('label', {}, label), el('input', { class: 'in', 'data-path': key, value: s[key] || '', placeholder: 'Paste the code or the whole <meta> tag', spellcheck: false,
+    onchange: (e) => {
+      const v = e.target.value.trim();
+      const m = v.match(/content\s*=\s*["']?([^"'\s>]+)/i);
+      const clean = (m ? m[1] : v).replace(/[^\w-]/g, '');
+      if (clean) s[key] = clean; else delete s[key];
+      e.target.value = clean;
+      commit();
+    } }), el('p', { class: 'f__help' }, help));
+  body.append(
+    code('googleVerification', 'Google Search Console code', 'In Search Console, add your site, choose “HTML tag” and paste it here. Publish, then press Verify in Search Console.'),
+    code('bingVerification', 'Bing Webmaster Tools code', 'In Bing Webmaster Tools, choose “Meta tag” and paste it here.'));
 }
 
 function panelRedirects(body) {
@@ -1388,6 +1449,7 @@ function needGH(reason) {
 // ---------------------------------------------------------------------------
 // Blog: posts (full articles with their own page) and blurbs (short notes)
 const findPost = (id) => (state.doc.posts || []).find((p) => p.id === id);
+const isScheduled = (p) => has('scheduled-posts') && p.published !== false && String(p.date || '').slice(0, 10) > theme.today();
 const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const byDate = (a, b) => String(b.date || '').localeCompare(String(a.date || ''));
 
@@ -1454,7 +1516,7 @@ function panelBlog(box) {
     ? el('div', { class: 'post-list' }, posts.map((p) => el('button', { type: 'button', class: 'post-row', onclick: () => openPost(p.id) },
       el('span', { class: 'layer__icon' }, ico((p.kind || 'post') === 'blurb' ? 'sparkle' : 'pen')),
       el('span', { class: 'layer__txt' }, el('strong', {}, postTitle(p) || 'Untitled'), el('small', {}, `${formatDate(p.date)} · ${(p.kind || 'post') === 'blurb' ? 'Blurb' : 'Post'}`)),
-      p.published === false ? el('span', { class: 'badge' }, 'Draft') : null)))
+      p.published === false ? el('span', { class: 'badge' }, 'Draft') : isScheduled(p) ? el('span', { class: 'badge badge--soon', title: `Goes live on ${formatDate(p.date)}` }, 'Scheduled') : null)))
     : el('p', { class: 'p-hint' }, 'Nothing here yet. Write your first post!'));
   box.append(body);
 }
@@ -1481,7 +1543,7 @@ function panelPostEditor(box, p) {
   ], p, preview, '', renderPanel);
   renderFields(body, [{ key: 'title', label: blurb ? 'Title (optional)' : 'Title', type: 'text' }], p, autoSlug, '', renderPanel);
   renderFields(body, [
-    { key: 'date', label: 'Date', type: 'date' },
+    { key: 'date', label: 'Date', type: 'date', help: has('scheduled-posts') ? 'Pick a future date to schedule it: it goes live on that day by itself.' : undefined },
     { key: 'tags', label: 'Tags', type: 'text', help: 'Separate with commas, e.g. Security, Tips' },
     ...(blurb ? [
       { key: 'body', label: 'Blurb', type: 'markdown', rows: 6, placeholder: 'A quick thought, tip or something you liked…' },
@@ -1768,6 +1830,7 @@ function showProblem(c) {
   }
   if (c.code === 'invalid') { setTab(/^Post/.test(c.message) ? 'blog' : /redirect/i.test(c.message) ? 'site' : 'pages'); return; }
   if (['headerCta', 'tagline', 'footerText'].includes(w.field)) { select('__header', { scroll: true }); focusField('#inspector', w.field); return; }
+  if (w.field === 'theme') { setTab('theme'); return; }
   setTab('site');
   if (w.field === 'redirects') { setTimeout(() => $('#panel .redirect-add')?.scrollIntoView({ block: 'center' }), 40); return; }
   focusField('#panel', w.field);

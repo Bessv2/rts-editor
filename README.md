@@ -44,6 +44,20 @@ messages, and more. Each item has a **Show me** button that jumps to the right p
 setting. The Publish window lists anything worth fixing; problems marked “Must fix” block
 publishing until they are fixed.
 
+### More options
+
+- **Section names**: give any section a name only you see (“Spring promo”). Layers and the page
+  use it, so sections are easy to tell apart.
+- **Show on**: in Section style, show a section on all devices, computers only or phones only.
+- **Search and share preview**: the Pages tab shows how each page may look on Google and when
+  its link is shared, and each page can have its own share image.
+- **Search engines** (Settings): site language, plus the Google Search Console and Bing Webmaster
+  Tools codes (paste the code or the whole `<meta>` tag).
+- **Scheduled posts**: give a post a future date and it is marked “Scheduled”. It goes live on
+  that day by itself, because the site rebuilds every morning.
+- **Image descriptions**, the **message after sending** for the contact form, and a **contrast
+  check** in Checkup for colors that are hard to read.
+
 ### Page options
 
 - **Show on website** (Pages tab) takes a page off the site, or keeps a new one off until it is

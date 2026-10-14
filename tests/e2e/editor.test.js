@@ -413,6 +413,58 @@ test('drafts and settings stay with their site; uploaded SVGs are cleaned', asyn
   await ctx.close();
 });
 
+test('section names, search and share previews, search engine codes and scheduled posts', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('verification')) { t.skip('the site does not support these options yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+
+  // Name a section; Layers and the canvas use the name
+  await canvas.locator('.blk-services').first().click();
+  await p.fill('#inspector [data-path="__label"]', 'What we offer');
+  await canvas.locator('.ed-chip', { hasText: 'What we offer' }).waitFor();
+  await p.click('.ed-rail button[data-tab="layers"]');
+  await p.locator('.layer.is-sel strong', { hasText: 'What we offer' }).waitFor();
+
+  // Show a section on phones only: the editor marks it
+  await p.locator('#inspector .f', { hasText: 'Show on' }).locator('button', { hasText: 'Phones' }).click();
+  await canvas.locator('.blk-services.show-on--mobile').first().waitFor();
+
+  // Google and share previews follow the page settings
+  await p.click('.ed-rail button[data-tab="pages"]');
+  await p.fill('.page-item.is-current [data-path="seoTitle"]', 'IT help for small offices');
+  assert.match(await p.locator('.serp strong').innerText(), /IT help for small offices/);
+  assert.ok(await p.locator('.share-card').isVisible());
+  assert.ok(await p.locator('.page-item.is-current .f', { hasText: 'Share image for this page' }).isVisible());
+
+  // Search engine codes accept the whole <meta> tag
+  await p.click('.ed-rail button[data-tab="site"]');
+  await p.fill('#panel [data-path="googleVerification"]', '<meta name="google-site-verification" content="AbC-123_x" />');
+  await p.press('#panel [data-path="googleVerification"]', 'Tab');
+  assert.equal(await p.inputValue('#panel [data-path="googleVerification"]'), 'AbC-123_x');
+
+  // A post dated in the future is marked as scheduled and left out of the build
+  await p.click('.ed-rail button[data-tab="blog"]');
+  await p.click('button:has-text("New post")');
+  await p.fill('#panel [data-path="title"]', 'Coming soon post');
+  await p.fill('#panel input[type="date"]', '2999-01-01');
+  await p.dispatchEvent('#panel input[type="date"]', 'change');
+  await p.click('#panel .p-head button[title="Back to all entries"]');
+  await p.locator('.post-row', { hasText: 'Coming soon post' }).locator('.badge', { hasText: 'Scheduled' }).waitFor();
+
+  await publish(p);
+  assert.match(read('index.html'), /<meta name="google-site-verification" content="AbC-123_x">/);
+  assert.doesNotMatch(read('blog/index.html'), /Coming soon post/);
+  const content = JSON.parse(read('content/site.json'));
+  assert.ok(content.pages[0].sections.some((x) => x.label === 'What we offer' && x.data.showOn === 'mobile'));
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('a foreign script cannot run in the editor', async () => {
   const ctx = await browser.newContext();
   const p = await ctx.newPage();
