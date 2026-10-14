@@ -70,10 +70,11 @@ publishing until they are fixed.
 DNS changes can take a few minutes to an hour, and GitHub then issues the HTTPS certificate
 automatically.
 
-**Moving from the old built-in editor:** drafts and saved tokens don't carry over, because the
-editor now lives on its own address. If the old editor (roetechnologyservices.com/editor.html)
-has unpublished work, publish it there first, or use Settings → Backup → Download backup there
-and Settings → Backup → Restore from file here.
+**Moving from the old built-in editor:** the old editor has been retired. Drafts and saved
+tokens don't carry over, because the editor now lives on its own address. If you used the old
+editor, open roetechnologyservices.com/editor.html in the same browser: it offers to download any
+unpublished draft or saved version it left there. Then use Settings → Backup → Restore from file
+here.
 
 ## Security
 
@@ -131,3 +132,9 @@ SITE_DIR=site npm run test:e2e
 | `assets/js/store.js` | Drafts and saved versions in the browser (IndexedDB) |
 | `preview.html`, `assets/js/preview.js` | Preview of unpublished drafts |
 | `scripts/configure.mjs` | Applies `editor.config.json` |
+
+## License
+
+Proprietary. All rights reserved. This code is not open source: it may not be copied, reused or
+redistributed without written permission. See [`LICENSE`](LICENSE) and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
