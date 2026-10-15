@@ -46,6 +46,11 @@ publishing until they are fixed.
 
 ### More options
 
+- **Business hours** (Settings): tick the days you're open and set the times; the Contact section,
+  the footer and the **Opening hours** element show them with “Open now”, worked out for your
+  time zone. **Call button** (Settings): a “Call now” (and “Text us”) button that floats at the
+  bottom of phones, or every screen. **Quote request** (Add panel): a form with your own
+  questions.
 - **Elements**: add a heading, text, image, button, line or space to any section (the
   Elements group in the section panel, or the **+** in the section toolbar). Click an element on
   the page to edit it; its small toolbar moves, duplicates and removes it (Delete and Ctrl+D work
@@ -107,6 +112,51 @@ tokens don't carry over, because the editor now lives on its own address. If you
 editor, open roetechnologyservices.com/editor.html in the same browser: it offers to download any
 unpublished draft or saved version it left there. Then use Settings → Backup → Restore from file
 here.
+
+## Editor login
+
+Nobody can change the site without your GitHub token, but anyone who finds the editor's address
+can open it. To hide it completely, put it behind **Cloudflare Access** (free for up to 50
+people): visitors to `editor.roetechnologyservices.com` first see a sign-in page, and only the
+accounts you allow get through. You can sign in with **Google** or with a **one-time code sent
+to any email address**, such as your Zoho address. Once it is set up, the editor shows your account
+in the top right corner (with **Sign out**) and Settings → Editor login says it is protected.
+
+The public site is not affected: only the editor's address gets the login.
+
+**1. Move the domain's DNS to Cloudflare** (skip if it is already there)
+1. Create a free account at [dash.cloudflare.com](https://dash.cloudflare.com), choose
+   **Add a domain**, enter `roetechnologyservices.com` and pick the **Free** plan.
+2. Cloudflare copies your current DNS records. **Before going on, compare them with your
+   current DNS provider** and add anything missing, above all your **Zoho Mail records**
+   (the `MX` records `mx.zoho.com`, `mx2.zoho.com`, `mx3.zoho.com`, the `TXT` record with
+   `v=spf1 include:zoho.com`, the `zmail._domainkey` DKIM record and any verification `TXT`).
+   If these are missing, email stops arriving.
+3. Set every record to **DNS only** (grey cloud) **except** `editor`, which must be **Proxied**
+   (orange cloud). The GitHub Pages records stay as they are: `A` records to
+   `185.199.108.153`, `.109.153`, `.110.153`, `.111.153` and `CNAME`s for `www` and `editor` to
+   `bessv2.github.io`.
+4. At the company where you bought the domain, replace the nameservers with the two Cloudflare
+   shows. Cloudflare emails you when the domain is active (minutes to a few hours).
+5. In Cloudflare, **SSL/TLS → Overview**: choose **Full** (not Flexible, which causes endless
+   redirects with GitHub Pages).
+
+**2. Turn on the login**
+1. In Cloudflare, open **Zero Trust**, pick a team name (e.g. `roetech`) and the **Free** plan.
+2. **Settings → Authentication → Login methods**: **One-time PIN** (a code by email) is there by
+   default. To also sign in with Google, choose **Add new → Google** and follow the steps shown
+   (you create an OAuth client in Google Cloud Console with the redirect address Cloudflare
+   gives you, `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`).
+3. **Access → Applications → Add an application → Self-hosted**:
+   - Name: `Site editor`. Domain: `editor.roetechnologyservices.com`.
+   - Session duration: how long you stay signed in, e.g. `1 week`.
+   - Policy: action **Allow**, rule **Include → Emails**, and enter your Gmail address and your
+     Zoho address (only these can get in).
+4. Save, then open the editor in a private window: you should see the Cloudflare sign-in page.
+   Pick Google, or enter your Zoho address and type the code from the email.
+
+To give someone else access later, add their email to the policy. To remove the login, delete
+the application in Zero Trust.
 
 ## Security
 

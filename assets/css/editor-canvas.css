@@ -57,3 +57,8 @@ html { scroll-behavior: auto; }
 .ed-el-tools button:disabled { opacity: .35; cursor: default; background: none; }
 .ed-el-tools .ico { width: 1em; height: 1em; }
 .edit-mode [data-el] .figure__empty { cursor: pointer; }
+
+/* The canvas may be narrower than a real computer screen: phones-only parts follow the chosen preview size */
+.edit-mode:not([data-device="mobile"]) .callbar--phones { display: none; }
+.edit-mode[data-device="mobile"] .callbar--phones { display: flex; }
+.edit-mode[data-device="mobile"] .callbar-space.callbar--phones { display: block; }

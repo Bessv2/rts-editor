@@ -36,6 +36,10 @@
         <button type="button" class="ed-icon-btn" id="redo" title="Redo (Ctrl+Shift+Z)"><span data-icon="redo"></span></button>
         <button type="button" class="ed-btn" id="preview"><span data-icon="eye"></span>Preview</button>
         <button type="button" class="ed-btn ed-btn--primary" id="publish"><span data-icon="send"></span>Publish</button>
+        <div class="ed-account" id="account" hidden>
+          <button type="button" class="ed-account__btn" aria-haspopup="true" aria-expanded="false" title="Your account"></button>
+          <div class="ed-account__menu" hidden><small>Signed in as</small><strong class="ed-account__email"></strong><a href="/cdn-cgi/access/logout">Sign out</a></div>
+        </div>
       </div>
     </header>
 
