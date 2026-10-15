@@ -53,23 +53,35 @@ before(async () => {
 after(async () => { await browser?.close(); site?.close(); editor?.close(); if (tmp) await rm(tmp, { recursive: true, force: true }); });
 
 // Fake GitHub API: records the committed tree and lets tests read committed files.
-async function mockGitHub(ctx, { contentSha } = {}) {
-  const tree = []; const blobs = []; const commits = [];
+// Routes are matched by method too, like GitHub: the branch is read from
+// /git/ref/heads/… but moved with a PATCH to /git/refs/heads/….
+// token: 'ok' (default), 'bad' (401 everywhere) or 'read-only' (saving is refused).
+async function mockGitHub(ctx, { contentSha, token = 'ok' } = {}) {
+  const tree = []; const blobs = []; const commits = []; const refs = [];
   await ctx.route('https://api.github.com/**', async (r) => {
+    const method = r.request().method();
     const path = new URL(r.request().url()).pathname.replace(/^\/repos\/[^/]+\/[^/]+/, '');
     const json = (o, status = 200) => r.fulfill({ status, contentType: 'application/json', body: JSON.stringify(o) });
-    if (path === '/git/ref/heads/main') return json({ object: { sha: 'c0' } });
-    if (path === '/git/commits/c0') return json({ tree: { sha: 't0' } });
-    if (path === '/git/blobs') { blobs.push(JSON.parse(r.request().postData())); return json({ sha: `b${blobs.length - 1}` }); }
-    if (path === '/contents/generated.json') return r.fulfill({ status: 200, contentType: 'text/plain', body: JSON.stringify({ files: ['index.html', 'old-page/index.html'] }) });
-    if (path === '/git/trees') { tree.push(...JSON.parse(r.request().postData()).tree); return json({ sha: 't1' }); }
-    if (path === '/contents/content/site.json' && contentSha) return json({ sha: contentSha });
-    if (path === '/git/commits') { commits.push(1); return json({ sha: 'c1c1c1c1', html_url: 'https://github.com/x' }); }
-    if (path === '/git/refs/heads/main') return json({});
+    const is = (m, p) => method === m && path === p;
+    if (token === 'bad') return json({ message: 'Bad credentials' }, 401);
+    if (is('GET', '/user')) return json({ login: 'site-owner' });
+    if (is('GET', '')) return json({ full_name: 'o/r' });
+    if (is('GET', '/branches/main')) return json({ name: 'main' });
+    if (is('GET', '/git/ref/heads/main')) return json({ object: { sha: 'c0' } });
+    if (is('GET', '/git/commits/c0')) return json({ tree: { sha: 't0' } });
+    if (is('POST', '/git/blobs')) {
+      if (token === 'read-only') return json({ message: 'Resource not accessible by personal access token' }, 403);
+      blobs.push(JSON.parse(r.request().postData())); return json({ sha: `b${blobs.length - 1}` });
+    }
+    if (is('GET', '/contents/generated.json')) return r.fulfill({ status: 200, contentType: 'text/plain', body: JSON.stringify({ files: ['index.html', 'old-page/index.html'] }) });
+    if (is('POST', '/git/trees')) { tree.push(...JSON.parse(r.request().postData()).tree); return json({ sha: 't1' }); }
+    if (is('GET', '/contents/content/site.json') && contentSha) return json({ sha: contentSha });
+    if (is('POST', '/git/commits')) { commits.push(1); return json({ sha: 'c1c1c1c1', html_url: 'https://github.com/x' }); }
+    if (is('PATCH', '/git/refs/heads/main')) { refs.push(JSON.parse(r.request().postData()).sha); return json({ object: { sha: refs.at(-1) } }); }
     return json({ message: 'Not Found' }, 404);
   });
   const read = (path) => Buffer.from(blobs[Number(tree.find((t) => t.path === path).sha.slice(1))].content, 'base64').toString();
-  return { tree, read, commits };
+  return { tree, read, commits, refs };
 }
 
 const gitSha = (buf) => createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf])).digest('hex');
@@ -91,7 +103,8 @@ async function newPage(ctx) {
 
 test('editor loads the theme and content from the site and publishes a full build', async () => {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
-  const { tree, read } = await mockGitHub(ctx);
+  const gh = await mockGitHub(ctx);
+  const { tree, read } = gh;
   const p = await newPage(ctx);
   p.on('dialog', (d) => d.accept());
   await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
@@ -136,8 +149,9 @@ test('editor loads the theme and content from the site and publishes a full buil
   await preview.waitForTimeout(200);
   assert.ok(preview.url().startsWith(editorUrl), `skip link stays in the preview: ${preview.url()}`);
 
-  // Publish builds every page with the site's builder
+  // Publish builds every page with the site's builder and moves the branch to the new commit
   await publish(p);
+  assert.deepEqual(gh.refs, ['c1c1c1c1'], 'main now points at the new commit');
   const paths = tree.map((t) => t.path);
   for (const f of ['content/site.json', 'index.html', 'services/index.html', 'blog/index.html', 'sitemap.xml', 'feed.xml', 'generated.json']) assert.ok(paths.includes(f), f);
   assert.ok(paths.some((f) => /^assets\/uploads\/[0-9a-f]+\.(webp|png)$/.test(f)), 'uploaded image committed');
@@ -463,6 +477,35 @@ test('section names, search and share previews, search engine codes and schedule
   assert.ok(content.pages[0].sections.some((x) => x.label === 'What we offer' && x.data.showOn === 'mobile'));
   assert.deepEqual(p.errors, []);
   await ctx.close();
+});
+
+test('connection problems are explained in plain words and never change the site', async () => {
+  for (const [token, expected, fix] of [
+    ['ok', /Connected to .* as site-owner\. Publishing will work/, null],
+    ['bad', /does not accept this access token/, /expired/],
+    ['read-only', /can read the repository but is not allowed to save/, /Contents to “Read and write”/],
+  ]) {
+    const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+    const gh = await mockGitHub(ctx, { token });
+    const p = await newPage(ctx);
+    p.on('dialog', (d) => d.accept());
+    await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+    await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+    await p.click('#publish');
+    await p.fill('.ed-modal input[type=password]', 'github_pat_TEST');
+    await p.click('button:has-text("Test connection")');
+    await p.locator('.log div', { hasText: expected }).waitFor();
+    if (fix) assert.match(await p.locator('.log').innerText(), fix);
+    if (token === 'read-only') {
+      // A failed publish says the live site is untouched and runs the same check.
+      await p.click('button:has-text("Publish now")');
+      await p.locator('.log div', { hasText: 'Your live site was not changed' }).waitFor();
+      await p.locator('.log div', { hasText: expected }).waitFor();
+      assert.equal(gh.refs.length, 0);
+    }
+    assert.deepEqual(p.errors.filter((e) => !/40[13]/.test(e)), []);
+    await ctx.close();
+  }
 });
 
 test('a foreign script cannot run in the editor', async () => {

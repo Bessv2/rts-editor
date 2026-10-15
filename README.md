@@ -79,7 +79,9 @@ publishing until they are fixed.
 3. **Publishing token**: open the editor, press Publish, and paste a fine-grained token with
    access to **Bessv2/RTS** only and **Contents: Read and write**. Tick "Remember token" only on
    your own computer. The editor lives on its own address, so the browser asks for the token
-   (and keeps drafts) separately from the old built-in editor.
+   (and keeps drafts) separately from the old built-in editor. **Test connection** in the same
+   window checks the token, repository, branch and permission one by one and says what to change
+   if something is missing; it also runs on its own when a publish is refused.
 
 DNS changes can take a few minutes to an hour, and GitHub then issues the HTTPS certificate
 automatically.
