@@ -523,6 +523,130 @@ function linkSuggestions() {
   return 'link-suggest';
 }
 
+// ---------------------------------------------------------------------------
+// Link picker: choose a page, a section, a post, email or phone instead of
+// typing addresses. `from` is the page the link sits on (-1 when it shows on
+// every page or in a post): sections on that page are linked as #anchor,
+// anywhere else with their page's address in front.
+const pageOfTarget = (target) => (state.doc.pages[state.page]?.sections.some((s) => s.data === target) ? state.page : -1);
+
+// A readable anchor (“our-services”) no other section on the page uses.
+function uniqueAnchor(page, sec) {
+  const taken = new Set(['main', ...page.sections.filter((s) => s !== sec).map((s) => anchorId(s.data?.anchor)).filter(Boolean)]);
+  const base = slugify(sec.label || sectionSummary(sec) || BLOCKS[sec.type]?.label || 'section').slice(0, 40).replace(/-+$/, '') || 'section';
+  let id = base;
+  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+  return id;
+}
+
+// Typed addresses: example.com → https://example.com, name@example.com → mailto:, phone numbers → tel:.
+function normalizeLink(v) {
+  const t = String(v || '').trim();
+  if (!t || /^(https?:|mailto:|tel:|\/|#)/i.test(t)) return t;
+  if (/^[^\s@/]+@[^\s@/]+\.[a-z]{2,}$/i.test(t)) return `mailto:${t}`;
+  if (/^\+?[\d\s().-]{7,}$/.test(t)) return `tel:${t.replace(/[^+\d]/g, '')}`;
+  if (/^[\w-]+(\.[\w-]+)+(:\d+)?([/?#]\S*)?$/.test(t)) return `https://${t}`;
+  return '';
+}
+
+function openLinkPicker(onPick, { from = -1, current = '' } = {}) {
+  const pick = (href) => { closeModal(); onPick(href); };
+  const items = []; // { node, text, page } for the search box
+  const row = (iconName, title, sub, href, onclick, extra = '') => el('button', { type: 'button', class: `link-row${extra}${href && href === current ? ' is-on' : ''}`, onclick: onclick || (() => pick(href)) },
+    ico(iconName), el('span', { class: 'link-row__txt' }, el('strong', {}, title), sub ? el('small', {}, sub) : null));
+  const groups = [];
+  const group = (title, ...children) => { const g = el('div', { class: 'link-group' }, el('p', { class: 'link-group__title' }, title), ...children); groups.push(g); return g; };
+
+  const pages = state.doc.pages.map((p, i) => {
+    const href = pageHref(p, i);
+    const pageRow = row('layout', p.title || 'Untitled page', `${href}${p.draft && i > 0 ? ' · unpublished' : ''}`, href);
+    const secRows = p.sections.filter((sec) => BLOCKS[sec.type]).map((sec) => {
+      const block = BLOCKS[sec.type];
+      const name = sec.label || sectionSummary(sec) || block.label;
+      const id = anchorId(sec.data?.anchor);
+      const hrefFor = (a) => (i === from ? `#${a}` : `${href}#${a}`);
+      const node = row(block.icon || 'layout', name, `${block.label}${id ? ` · #${id}` : ''}`, id ? hrefFor(id) : '', () => {
+        let a = anchorId(sec.data.anchor);
+        if (!a) {
+          a = uniqueAnchor(p, sec);
+          sec.data.anchor = a;
+          if (i === state.page) refreshSection(sec.id);
+          toast(`“${name}” can now be linked to as #${a}`);
+        }
+        pick(hrefFor(a));
+      }, ' link-row--sub');
+      items.push({ node, text: `${name} ${block.label} ${id}`.toLowerCase(), page: i });
+      return node;
+    });
+    const open = i === (from === -1 ? state.page : from);
+    const toggle = secRows.length ? el('button', { type: 'button', class: 'link-more', 'aria-expanded': String(open) }, `${secRows.length} section${secRows.length === 1 ? '' : 's'}`, ico('chevron-down')) : null;
+    const box = el('div', { class: `link-page${open ? ' is-open' : ''}` }, el('div', { class: 'link-page__head' }, pageRow, toggle), ...secRows);
+    toggle?.addEventListener('click', () => { box.classList.toggle('is-open'); toggle.setAttribute('aria-expanded', String(box.classList.contains('is-open'))); });
+    items.push({ node: pageRow, text: `${p.title} ${href}`.toLowerCase(), page: i, head: true });
+    return box;
+  });
+  group('Pages', ...pages);
+
+  const posts = state.doc.posts || [];
+  if (posts.length) {
+    const live = new Set(theme.publishedPosts ? theme.publishedPosts(state.doc) : posts);
+    group('Blog posts', ...posts.map((post) => {
+      const href = `/${POSTS_BASE}/${post.slug}/`;
+      const node = row('pen', postTitle(post), `${href}${live.has(post) ? '' : ' · not live yet'}`, href);
+      items.push({ node, text: `${postTitle(post)} ${href}`.toLowerCase() });
+      return node;
+    }));
+  }
+
+  const s = state.doc.site;
+  const contact = [];
+  if (s.email) contact.push(row('mail', `Email ${s.email}`, 'Opens the visitor’s email app', `mailto:${s.email}`));
+  if (s.phone) contact.push(row('phone', `Call ${s.phone}`, 'Dials on phones', `tel:${s.phone.replace(/[^+\d]/g, '')}`));
+  contact.forEach((node) => items.push({ node, text: node.textContent.toLowerCase() }));
+  group('Email & phone', ...(contact.length ? contact : [el('p', { class: 'p-hint' }, 'Add your email and phone under Settings → Business to link to them.')]));
+
+  const list = el('div', { class: 'link-list' }, ...groups);
+  const none = el('p', { class: 'p-hint', hidden: true }, 'Nothing matches. Type a web address below instead.');
+  const search = el('input', { class: 'in', type: 'search', placeholder: 'Search pages, sections and posts…', 'aria-label': 'Search' });
+  const isWeb = current && !/^(\/|#|mailto:|tel:)/i.test(current);
+  const url = el('input', { class: 'in', type: 'text', placeholder: 'https://example.com', value: isWeb ? current : '', spellcheck: false, 'aria-label': 'Web address' });
+  const useUrl = () => {
+    const href = normalizeLink(url.value);
+    if (!href) { toast('That doesn’t look like a web address. Try https://example.com', { error: true }); url.focus(); return; }
+    pick(href);
+  };
+  url.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); useUrl(); } });
+
+  const filter = () => {
+    const q = search.value.trim().toLowerCase();
+    list.classList.toggle('is-searching', !!q);
+    const shownPages = new Set();
+    for (const it of items) {
+      const hit = !q || it.text.includes(q);
+      it.node.hidden = !hit;
+      if (hit && q && it.page != null) shownPages.add(it.page);
+    }
+    // A page stays visible while any of its sections match.
+    pages.forEach((box, i) => { box.hidden = !!q && !shownPages.has(i); box.querySelector('.link-page__head > .link-row').hidden = false; });
+    groups.forEach((g) => { g.hidden = !!q && !g.querySelector('.link-row:not([hidden])'); });
+    none.hidden = !q || groups.some((g) => !g.hidden);
+  };
+  search.addEventListener('input', filter);
+  search.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const first = [...list.querySelectorAll('.link-row')].find((b) => b.offsetParent);
+    if (first) first.click(); else if (normalizeLink(search.value)) { url.value = search.value; useUrl(); }
+  });
+
+  openModal('Choose a link', el('div', { class: 'link-pick' },
+    search, list, none,
+    el('div', { class: 'f link-pick__web' }, el('label', {}, 'Or link to another website'), el('div', { class: 'link-pick__url' }, url, el('button', { type: 'button', class: 'ed-btn', onclick: useUrl }, 'Use link')))));
+  setTimeout(() => search.focus(), 50);
+}
+
+const chooseLinkBtn = (onclick) => el('button', { type: 'button', class: 'ed-btn ed-btn--sm link-choose', title: 'Choose a page, section, post, email or phone', onclick }, ico('link'), 'Choose');
+
 function fieldControl(f, path, val, change, target, onRender) {
   const wrap = el('div', { class: 'f' });
   const label = f.label ? el('label', {}, f.label) : null;
@@ -534,7 +658,8 @@ function fieldControl(f, path, val, change, target, onRender) {
     case 'link': {
       const input = el('input', { class: 'in', type: 'text', value: val ?? '', 'data-path': path, list: f.type === 'link' ? linkSuggestions() : null,
         oninput: (e) => change(path, e.target.value, { soon: true }) });
-      put(wrap, label, input, help);
+      const choose = f.type === 'link' ? chooseLinkBtn(() => openLinkPicker((href) => change(path, href, { structural: true }), { from: pageOfTarget(target), current: input.value.trim() })) : null;
+      put(wrap, label, choose ? el('div', { class: 'f-link' }, input, choose) : input, help);
       return wrap;
     }
     case 'date': {
@@ -583,7 +708,7 @@ function fieldControl(f, path, val, change, target, onRender) {
       const tools = [
         [el('b', {}, 'B'), 'Bold', () => wrapSel('**', '**', 'bold text')],
         [el('i', {}, 'I'), 'Italic', () => wrapSel('*', '*', 'italic text')],
-        [ico('link'), 'Link', () => { const url = prompt('Link address', 'https://'); if (url) wrapSel('[', `](${url.trim()})`, 'link text'); }],
+        [ico('link'), 'Link', () => openLinkPicker((url) => wrapSel('[', `](${url.replace(/\s/g, '%20').replace(/\)/g, '%29')})`, 'link text'), { from: pageOfTarget(target) })],
         [el('b', {}, 'H'), 'Heading', () => prefix('## ')],
         [ico('list'), 'Bullet list', () => prefix('- ')],
         [ico('quote'), 'Quote', () => prefix('> ')],
@@ -645,9 +770,10 @@ function fieldControl(f, path, val, change, target, onRender) {
       const b = val || {};
       const lbl = el('input', { class: 'in', type: 'text', placeholder: 'Button text (empty = hidden)', value: b.label || '', 'data-path': `${path}.label`,
         oninput: (e) => change(`${path}.label`, e.target.value, { soon: true }) });
-      const url = el('input', { class: 'in', type: 'text', placeholder: 'Link: /contact/, #section, https://…', value: b.href || '', list: linkSuggestions(),
+      const url = el('input', { class: 'in', type: 'text', placeholder: 'Link: /contact/, #section, https://…', value: b.href || '', list: linkSuggestions(), 'data-path': `${path}.href`,
         oninput: (e) => change(`${path}.href`, e.target.value, { soon: true }) });
-      put(wrap, el('span', { class: 'f__label' }, f.label), el('div', { class: 'f-btn' }, lbl, el('div', { class: 'f-btn__url' }, ico('link'), url)), help);
+      const choose = chooseLinkBtn(() => openLinkPicker((href) => change(`${path}.href`, href, { structural: true }), { from: pageOfTarget(target), current: url.value.trim() }));
+      put(wrap, el('span', { class: 'f__label' }, f.label), el('div', { class: 'f-btn' }, lbl, el('div', { class: 'f-btn__url' }, ico('link'), url, choose)), help);
       return wrap;
     }
     case 'icon': {
@@ -782,6 +908,7 @@ const THUMBS = {
   map: '<div class="thumb" style="background:radial-gradient(circle at 1px 1px,#93c5fd 1.2px,transparent 0) 0 0/8px 8px,#eff6ff;display:grid;place-items:center"><span style="width:12px;height:12px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#2563eb;display:block"></span></div>',
   team: '<div class="thumb"><div class="t-row" style="justify-items:center"><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div></div></div>',
   image: '<div class="thumb"><div class="t-img"></div></div>',
+  booking: '<div class="thumb"><i class="t-dark" style="width:40%;margin:0 auto"></i><div class="t-box" style="height:38px;display:grid;grid-template-columns:repeat(5,1fr);gap:3px;padding:4px;align-content:center"><i></i><i class="t-acc"></i><i></i><i></i><i class="t-acc"></i><i></i><i></i><i class="t-acc"></i><i></i><i></i></div></div>',
 };
 
 function setTab(tab) {

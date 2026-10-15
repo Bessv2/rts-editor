@@ -27,6 +27,12 @@ const origin = site.origin;
 const { owner, name, branch = 'main' } = config.repo || {};
 if (!/^[\w.-]+$/.test(owner || '') || !/^[\w.-]+$/.test(name || '') || !/^[\w./-]+$/.test(branch)) throw new Error('repo.owner, repo.name and repo.branch are required');
 
+// Videos, maps and the booking calendars the site can show (BOOKING_ORIGINS in
+// the site's blocks.js; the browser tests check the two lists match).
+export const FRAME_ORIGINS = ['https://www.youtube-nocookie.com', 'https://player.vimeo.com', 'https://www.google.com',
+  'https://calendly.com', 'https://cal.com', 'https://app.cal.com', 'https://outlook.office365.com', 'https://outlook.office.com',
+  'https://calendar.google.com', 'https://meetings.hubspot.com', 'https://app.acuityscheduling.com'];
+
 export function csp(siteOrigin, { preview = false } = {}) {
   return [
     "default-src 'self'",
@@ -35,7 +41,7 @@ export function csp(siteOrigin, { preview = false } = {}) {
     "font-src 'self' https://fonts.gstatic.com",
     `img-src 'self' data: blob: https: ${siteOrigin}`,
     `connect-src 'self' https://api.github.com ${siteOrigin}`,
-    preview ? 'frame-src https://www.youtube-nocookie.com https://player.vimeo.com https://www.google.com' : "frame-src 'self'",
+    preview ? `frame-src ${FRAME_ORIGINS.join(' ')}` : "frame-src 'self'",
     `base-uri 'self' ${siteOrigin}`,
     "object-src 'none'",
     "form-action 'self'",
