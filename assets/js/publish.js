@@ -56,7 +56,9 @@ export function createApi({ owner, repo, token }) {
         : res.status === 403 ? ' (the token needs Contents: Read and write on this repository)'
         : res.status === 404 ? ' (check repository, branch and token permissions)'
         : res.status === 409 || res.status === 422 ? ' (the branch changed, try again)' : '';
-      throw new Error(`${json.message || res.statusText}${hint}`);
+      const err = new Error(`${json.message || res.statusText}${hint}`);
+      err.status = res.status;
+      throw err;
     }
     return json;
   };
@@ -98,11 +100,10 @@ export async function extractImages(doc) {
 // confirmOverwrite() decides whether to replace it.
 export async function publishToGitHub({ owner, repo, branch, token, message, doc, origin, buildSite, staleFiles, base, confirmOverwrite, log = () => {} }) {
   const api = createApi({ owner, repo, token });
-  const ref = `/git/ref/heads/${encPath(branch)}`;
   log('Preparing content…');
   const { out, files } = await extractImages(doc);
   log(`Connecting to ${owner}/${repo} (${branch})…`);
-  const head = await api(ref);
+  const head = await api(`/git/ref/heads/${encPath(branch)}`);
   const parent = await api(`/git/commits/${head.object.sha}`);
   if (base && confirmOverwrite) {
     const current = await api(`/contents/content/site.json?ref=${head.object.sha}`, { allow404: true });
@@ -135,9 +136,48 @@ export async function publishToGitHub({ owner, repo, branch, token, message, doc
   const newTree = await api('/git/trees', { method: 'POST', body: { base_tree: parent.tree.sha, tree } });
   if (newTree.sha === parent.tree.sha) { log('No changes since the last publish.', 'ok'); return { unchanged: true, published: out, contentSha: content.sha }; }
   const commit = await api('/git/commits', { method: 'POST', body: { message, tree: newTree.sha, parents: [head.object.sha] } });
-  await api(ref, { method: 'PATCH', body: { sha: commit.sha } });
+  // Reading a branch is /git/ref/…, moving it is /git/refs/… (GitHub answers 404 to a PATCH on the singular form).
+  await api(`/git/refs/heads/${encPath(branch)}`, { method: 'PATCH', body: { sha: commit.sha } });
   log(`Committed ${commit.sha.slice(0, 7)}.`, 'ok');
   return { commitUrl: commit.html_url, published: out, contentSha: content.sha };
+}
+
+// Checks, in order, everything publishing needs and explains the first thing
+// that is missing in plain words. Only reads, apart from saving one empty file
+// object (git keeps a single copy of it and it never appears in the site).
+// Returns { ok, message, fix }.
+export async function checkAccess({ owner, repo, branch, token }) {
+  const at = (path, opts) => fetch(`https://api.github.com${path}`, {
+    cache: 'no-store',
+    ...opts,
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(opts?.body ? { 'Content-Type': 'application/json' } : {}) },
+  });
+  const r = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  const classic = /^gh[pousr]_/.test(token);
+  const fail = (message, fix) => ({ ok: false, message, fix });
+  let res;
+  try { res = await at('/user'); } catch { return fail('Could not reach GitHub.', 'Check your internet connection and try again.'); }
+  if (res.status === 401) return fail('GitHub does not accept this access token.', 'It may be mistyped, expired or deleted. Create a new token and paste it again.');
+  if (!res.ok) return fail(`GitHub answered ${res.status} when checking the token.`, 'Try again in a minute.');
+  const user = (await res.json().catch(() => ({}))).login || '';
+  res = await at(r);
+  if (res.status === 404 || res.status === 403) {
+    return fail(`Repository ${owner}/${repo} was not found${user ? ` for ${user}` : ''}.`,
+      'Check the Owner and Repository boxes match the address github.com/OWNER/REPOSITORY, and that the token was given access to it.');
+  }
+  if (!res.ok) return fail(`GitHub answered ${res.status} when opening ${owner}/${repo}.`, 'Try again in a minute.');
+  res = await at(`${r}/branches/${encPath(branch)}`);
+  if (res.status === 404) return fail(`Branch “${branch}” does not exist in ${owner}/${repo}.`, 'The Branch box is usually “main”. Use the branch GitHub Pages publishes from.');
+  if (!res.ok) return fail(`GitHub answered ${res.status} when opening branch ${branch}.`, 'Try again in a minute.');
+  res = await at(`${r}/git/blobs`, { method: 'POST', body: JSON.stringify({ content: '', encoding: 'utf-8' }) });
+  if (res.status === 403 || res.status === 404) {
+    return fail('The token can read the repository but is not allowed to save to it.', classic
+      ? 'This is a classic token: it needs the “repo” scope (or “public_repo” for a public repository). Or create a fine-grained token as described above.'
+      : `Edit the token on GitHub: under Repository access include ${repo}, and under Permissions → Repository permissions set Contents to “Read and write”. Organization-owned repositories may also need the owner to approve the token.`);
+  }
+  // 422 (GitHub refusing the empty test file) is only reported after permissions were checked.
+  if (!res.ok && res.status !== 422) return fail(`GitHub answered ${res.status} when testing saving.`, 'Try again in a minute.');
+  return { ok: true, message: `Connected to ${owner}/${repo} (${branch})${user ? ` as ${user}` : ''}. Publishing will work.` };
 }
 
 // True when the site's code (assets/js) changed on the branch after `since`,

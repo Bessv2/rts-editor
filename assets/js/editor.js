@@ -1,5 +1,5 @@
 // Visual site editor. Edits content/site.json through a live canvas.
-import { publishToGitHub, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft, gitBlobSha, PublishCancelled, codeChangedSince } from './publish.js';
+import { publishToGitHub, checkAccess, listPublishedVersions, readPublishedVersion, saveCloudDraft, loadCloudDraft, gitBlobSha, PublishCancelled, codeChangedSince } from './publish.js';
 import { kv, versions } from './store.js';
 import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
 import { htmlToMarkdown, hasFormatting, stripHandlers } from './html-to-md.js';
@@ -1341,8 +1341,24 @@ function openPublish() {
     checkList(shown.slice(0, 5)),
     shown.length > 5 ? el('button', { type: 'button', class: 'pub-checks__all', onclick: () => { closeModal(); setTab('checkup'); } }, `See all ${shown.length} in Checkup`) : null) : null;
   if (errors.length) go.disabled = true;
+  const test = el('button', { type: 'button', class: 'ed-btn' }, ico('check'), 'Test connection');
+  const readCfg = () => ({ owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', token: token.value.trim() });
+  const diagnose = async (cfg) => {
+    write('Checking your GitHub connection…');
+    const r = await checkAccess(cfg);
+    write(r.message, r.ok ? 'ok' : 'err');
+    if (r.fix) write(r.fix);
+    return r;
+  };
+  test.addEventListener('click', async () => {
+    const cfg = readCfg();
+    log.replaceChildren();
+    if (!cfg.owner || !cfg.repo || !cfg.token) { write('Fill in repository and token first.', 'err'); return; }
+    test.disabled = true;
+    try { await diagnose(cfg); } finally { test.disabled = false; }
+  });
   go.addEventListener('click', async () => {
-    const cfg = { owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', token: token.value.trim() };
+    const cfg = readCfg();
     if (!cfg.owner || !cfg.repo || !cfg.token) { write('Fill in repository and token first.', 'err'); return; }
     rememberGH(cfg, remember.checked);
     const moved = keepAllOldAddresses();
@@ -1372,6 +1388,8 @@ function openPublish() {
       toast('Published! Changes go live in about a minute.');
     } catch (e) {
       write(e instanceof PublishCancelled ? e.message : `Error: ${e.message}`, 'err');
+      // Nothing on the site changes unless the very last step succeeds.
+      if ([401, 403, 404].includes(e.status)) { write('Your live site was not changed.'); await diagnose(cfg).catch(() => {}); }
     } finally { go.disabled = false; }
   });
 
@@ -1389,7 +1407,7 @@ function openPublish() {
     el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Remember token on this computer', remember)),
     el('div', { class: 'f' }, el('label', {}, 'Change note'), msg),
     log,
-    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn', onclick: closeModal }, 'Cancel'), go));
+    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn', onclick: closeModal }, 'Cancel'), test, go));
 
   const filePane = el('div', { hidden: true },
     el('p', {}, 'Prefer to publish by hand? Download your content file and replace content/site.json in the repository.'),
