@@ -479,6 +479,100 @@ test('section names, search and share previews, search engine codes and schedule
   await ctx.close();
 });
 
+test('the link picker links pages, sections, posts, email and web addresses', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  const dialogs = [];
+  p.on('dialog', (d) => { dialogs.push(d.message()); return d.accept(); });
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().click();
+  const href = '#inspector [data-path="primary.href"]';
+  const choose = () => p.locator('#inspector .f', { has: p.locator('[data-path="primary.href"]') }).locator('button', { hasText: 'Choose' }).click();
+  const modal = p.locator('.ed-modal');
+
+  // A page, found by searching
+  await choose();
+  await modal.locator('input[type=search]').fill('serv');
+  assert.ok(await modal.locator('.link-page__head .link-row', { hasText: 'About' }).isHidden(), 'pages that do not match are hidden');
+  await modal.locator('.link-page__head .link-row', { hasText: 'Services' }).click();
+  assert.equal(await p.inputValue(href), '/services/');
+
+  // A section on the same page without an anchor gets one and is linked with #
+  await choose();
+  assert.ok(await modal.locator('.link-row.is-on', { hasText: 'Services' }).isVisible(), 'the current link is highlighted');
+  await modal.locator('.link-row--sub', { hasText: 'A simple, proven process' }).click();
+  assert.equal(await p.inputValue(href), '#a-simple-proven-process');
+  await canvas.locator('section#a-simple-proven-process').waitFor();
+  await p.locator('.toast', { hasText: 'can now be linked to as #a-simple-proven-process' }).waitFor();
+
+  // A section on another page is linked with its page address
+  await choose();
+  const contact = modal.locator('.link-page', { has: p.locator('.link-page__head', { hasText: 'Contact' }) });
+  await contact.locator('.link-more').click();
+  await contact.locator('.link-row--sub').first().click();
+  assert.match(await p.inputValue(href), /^\/contact\/#[\w-]+$/);
+
+  // A typed web address is completed
+  await choose();
+  await modal.locator('.link-pick__url input').fill('example.com/help');
+  await modal.locator('button', { hasText: 'Use link' }).click();
+  assert.equal(await p.inputValue(href), 'https://example.com/help');
+
+  // The Link button in the post editor uses the picker too
+  await p.click('.ed-rail button[data-tab="blog"]');
+  await p.click('button:has-text("New post")');
+  await p.fill('#panel [data-path="title"]', 'Linking test');
+  const body = p.locator('#panel textarea.md-in').first();
+  await body.fill('Write to us today.');
+  await body.evaluate((ta) => { ta.focus(); ta.setSelectionRange(0, 11); });
+  await p.click('#panel .md-tools button[title="Link"]');
+  await modal.locator('.link-row', { hasText: /^Email / }).click();
+  const email = JSON.parse(await readFile(join(SITE_DIR, 'content/site.json'), 'utf8')).site.email;
+  assert.equal(await body.inputValue(), `[Write to us](mailto:${email}) today.`);
+  assert.deepEqual(dialogs, [], 'no browser prompts');
+
+  await publish(p);
+  const content = JSON.parse(read('content/site.json'));
+  const hero = content.pages[0].sections.find((x) => x.type === 'hero');
+  assert.equal(hero.data.primary.href, 'https://example.com/help');
+  assert.ok(content.pages[0].sections.some((x) => x.data.anchor === 'a-simple-proven-process'));
+  assert.match(read('index.html'), /<section[^>]*id="a-simple-proven-process"/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('booking calendars: placeholder while editing, allowed in the preview', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('booking')) { t.skip('the site does not support booking calendars yet'); return; }
+  const previewCsp = (await readFile(join(tmp, 'preview.html'), 'utf8')).match(/frame-src [^;"]*/)[0];
+  for (const origin of theme.BOOKING_ORIGINS) assert.ok(previewCsp.includes(origin), `preview allows ${origin}`);
+
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (d) => d.accept());
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.click('.block-card:has-text("Booking calendar")');
+  await canvas.locator('.booking .map__placeholder', { hasText: 'Paste your booking link' }).waitFor();
+  await p.fill('#inspector [data-path="url"]', 'https://calendly.com/roe/30min');
+  await canvas.locator('.booking .map__placeholder', { hasText: 'Calendly calendar' }).waitFor();
+  assert.equal(await canvas.locator('.booking iframe').count(), 0, 'the live calendar is not loaded while editing');
+
+  const [preview] = await Promise.all([ctx.waitForEvent('page'), p.click('#preview')]);
+  await preview.locator('.booking__frame').waitFor({ state: 'attached' });
+  assert.equal(await preview.locator('.booking__frame').getAttribute('src'), 'https://calendly.com/roe/30min');
+
+  await publish(p);
+  assert.match(read('index.html'), /<iframe class="booking__frame" src="https:\/\/calendly.com\/roe\/30min"/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('connection problems are explained in plain words and never change the site', async () => {
   for (const [token, expected, fix] of [
     ['ok', /Connected to .* as site-owner\. Publishing will work/, null],

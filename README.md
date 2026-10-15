@@ -46,6 +46,13 @@ publishing until they are fixed.
 
 ### More options
 
+- **Link picker**: the **Choose** button next to every button and link (and the Link button
+  when writing) lists your pages, the sections on each page, blog posts, your email and phone,
+  with a search box, or takes a web address (`example.com` becomes `https://example.com`).
+  Picking a section that has no anchor gives it one from its heading.
+- **Booking calendar** (section): paste a Calendly, Microsoft Bookings, Google Calendar
+  appointment page, Cal.com, HubSpot or Acuity link. The editor shows a placeholder; Preview and
+  the live site show the calendar. Other booking links become a button.
 - **Section names**: give any section a name only you see (“Spring promo”). Layers and the page
   use it, so sections are easy to tell apart.
 - **Show on**: in Section style, show a section on all devices, computers only or phones only.
