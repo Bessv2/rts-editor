@@ -46,6 +46,15 @@ publishing until they are fixed.
 
 ### More options
 
+- **Elements**: add a heading, text, image, button, line or space to any section (the
+  Elements group in the section panel, or the **+** in the section toolbar). Click an element on
+  the page to edit it; its small toolbar moves, duplicates and removes it (Delete and Ctrl+D work
+  too). Give elements a width (½, ⅓, ⅔) to put them side by side. **Empty section** in the Add
+  panel starts with nothing but elements.
+- **Add between sections**: hover a section and press the **+** at its top or bottom edge.
+- **Page templates**: Pages → New offers ready-made pages (services, pricing, booking, team,
+  FAQ, text page and more), any of your own pages to copy, and pages you saved with **Save as
+  template**.
 - **Link picker**: the **Choose** button next to every button and link (and the Link button
   when writing) lists your pages, the sections on each page, blog posts, your email and phone,
   with a search box, or takes a web address (`example.com` becomes `https://example.com`).

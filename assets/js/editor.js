@@ -45,6 +45,7 @@ const state = {
   doc: null, page: 0, sel: null, tab: 'add', device: 'desktop',
   history: [], future: [], snap: '', published: '',
   open: new Set(), commitTimer: 0, ghToken: '', clipboard: null, post: null,
+  el: null, // index of the selected element inside the selected section
   base: '', // content/site.json version (git sha) this draft started from
 };
 
@@ -179,6 +180,10 @@ function renderCanvas({ keepScroll = true } = {}) {
   const post = state.post && findPost(state.post);
   app.innerHTML = post ? renderPostPage(state.doc, post, { preview: true }) : renderPage(state.doc, state.page, { edit: true });
   makeEditable(app);
+  addInserts(app);
+  if (!post && !sections().length) {
+    d.querySelector('main')?.insertAdjacentHTML('beforeend', `<div class="ed-empty"><button type="button" data-tool="insert" data-at="start">${icon('plus')}<span>Add your first section</span></button></div>`);
+  }
   decorateSelection();
   markSamples();
   d.defaultView.scrollTo(0, keepScroll ? y : 0);
@@ -195,6 +200,7 @@ function refreshSection(id) {
   const fresh = tmp.firstElementChild;
   old.replaceWith(fresh);
   makeEditable(fresh);
+  addInserts(fresh);
   decorateSelection();
   markSamples();
 }
@@ -210,12 +216,23 @@ function applyTheme() {
 
 function decorateSelection() {
   const d = cdoc();
-  $$('.ed-chip, .ed-tools, .ed-add', d).forEach((n) => n.remove());
-  $$('.is-selected', d).forEach((n) => n.classList.remove('is-selected'));
+  $$('.ed-chip, .ed-tools, .ed-el-tools', d).forEach((n) => n.remove());
+  $$('.is-selected, .is-el-selected', d).forEach((n) => n.classList.remove('is-selected', 'is-el-selected'));
   if (!state.sel) return;
   const node = d.querySelector(`[data-section-id="${CSS.escape(state.sel)}"]`);
   if (!node) return;
   node.classList.add('is-selected');
+  const elNode = state.el != null ? node.querySelector(`[data-el="${state.el}"]`) : null;
+  if (elNode) {
+    const count = elementsOf(findSection(state.sel)).length;
+    elNode.classList.add('is-el-selected');
+    const et = d.createElement('div');
+    et.className = 'ed-el-tools';
+    et.innerHTML = [['el-up', 'chevron-up', 'Move up', state.el === 0], ['el-down', 'chevron-down', 'Move down', state.el === count - 1],
+      ['el-copy', 'copy', 'Duplicate'], ['el-delete', 'trash', 'Remove']]
+      .map(([t, ic, title, dis]) => `<button type="button" data-tool="${t}" title="${title}"${dis ? ' disabled' : ''}>${icon(ic)}</button>`).join('');
+    elNode.append(et);
+  }
   const chip = d.createElement('div');
   chip.className = 'ed-chip';
   chip.textContent = (!isChrome(state.sel) && findSection(state.sel)?.label) || node.dataset.label;
@@ -228,16 +245,37 @@ function decorateSelection() {
   tools.innerHTML = [
     ['up', 'chevron-up', 'Move up', i === 0], ['down', 'chevron-down', 'Move down', i === sections().length - 1],
     ['duplicate', 'copy', 'Duplicate'], ['hide', hidden ? 'eye' : 'eye-off', hidden ? 'Show on live site' : 'Hide on live site'],
+    ...(Object.keys(ELEMENTS).length ? [['elements', 'plus', 'Add text, image or button to this section']] : []),
     ['copy', 'clipboard2', 'Copy (paste on any page)'], ['save', 'bookmark', 'Save to reuse later'],
     ['settings', 'sliders', 'Edit settings'], ['delete', 'trash', 'Delete'],
   ].map(([t, ic, title, dis]) => `<button type="button" data-tool="${t}" title="${title}"${dis ? ' disabled' : ''}>${icon(ic)}</button>`).join('');
   node.append(tools);
-  const add = d.createElement('button');
-  add.type = 'button';
-  add.className = 'ed-add';
-  add.dataset.tool = 'add';
-  add.innerHTML = `${icon('plus')}Add section`;
-  node.append(add);
+}
+
+// “+” buttons at the top and bottom edge of every section add a section right there.
+function addInserts(root) {
+  if (state.post || !root) return;
+  const nodes = root.matches?.('[data-section-id]') ? [root] : $$('[data-section-id]', root);
+  for (const n of nodes) {
+    if (isChrome(n.dataset.sectionId)) continue;
+    for (const at of ['before', 'after']) {
+      const b = n.ownerDocument.createElement('button');
+      b.type = 'button';
+      b.className = `ed-ins ed-ins--${at}`;
+      b.dataset.tool = 'insert';
+      b.dataset.at = at;
+      b.title = at === 'before' ? 'Add a section above' : 'Add a section below';
+      b.innerHTML = `${icon('plus')}<span>Add section</span>`;
+      n.append(b);
+    }
+  }
+}
+
+function insertAt(btn) {
+  if (btn.dataset.at === 'start') { openQuickAdd(0); return; }
+  const id = btn.closest('[data-section-id]')?.dataset.sectionId;
+  const i = sections().findIndex((s) => s.id === id);
+  openQuickAdd(i === -1 ? sections().length : btn.dataset.at === 'before' ? i : i + 1);
 }
 
 function scrollToSection(id, flash = false) {
@@ -252,13 +290,30 @@ function onCanvasClick(e) {
   if (tool) {
     e.preventDefault();
     e.stopPropagation();
+    if (tool.dataset.tool === 'insert') { insertAt(tool); return; }
     if (!tool.disabled) runTool(tool.dataset.tool, state.sel);
     return;
   }
   if (e.target.closest('a, summary, button')) e.preventDefault();
   const sec = e.target.closest('[data-section-id]');
   const id = sec?.dataset.sectionId || null;
+  const elNode = id && !isChrome(id) ? e.target.closest('[data-el]') : null;
+  if (elNode) {
+    const i = Number(elNode.dataset.el);
+    if (id !== state.sel || i !== state.el) selectElement(id, i);
+    // An empty image opens the library straight away.
+    if (e.target.closest('.figure__empty') && elementsOf(findSection(id))[i]?.type === 'image') {
+      openMediaPicker((src) => {
+        const item = elementsOf(findSection(id))[i];
+        if (!item) return;
+        item.image = src;
+        commit(); refreshSection(id); renderInspector();
+      });
+    }
+    return;
+  }
   if (id !== state.sel) select(id);
+  else if (state.el != null) { state.el = null; renderInspector(); decorateSelection(); }
 }
 
 function onCanvasInput(e) {
@@ -294,7 +349,7 @@ function onCanvasFocusIn(e) {
 function onCanvasFocusOut(e) {
   flushCommit();
   const r = richTarget(e);
-  if (r) r.n.innerHTML = rich(r.raw);
+  if (r) r.n.innerHTML = r.n.hasAttribute('data-md') && theme.markdown ? theme.markdown(r.raw, safeSrc) : rich(r.raw);
 }
 
 function onCanvasKey(e) {
@@ -318,6 +373,7 @@ function onCanvasPaste(e) {
 // Selection + section operations
 function select(id, { quiet = false, scroll = false } = {}) {
   flushCommit();
+  if (id !== state.sel) state.el = null;
   state.sel = id;
   decorateSelection();
   renderInspector();
@@ -331,16 +387,16 @@ function insertIndex() {
   return i === -1 ? sections().length : i + 1;
 }
 
-function addSection(type) {
-  insertSection(newSection(type, type === 'hero' && state.page > 0 ? { layout: 'center', pad: 'normal' } : {}), `${BLOCKS[type].label} added`);
+function addSection(type, at = null) {
+  insertSection(newSection(type, type === 'hero' && state.page > 0 ? { layout: 'center', pad: 'normal' } : {}), `${BLOCKS[type].label} added`, at);
 }
 
-// Inserts a copy of a section after the selection (or at the end).
-function insertSection(section, message) {
+// Inserts a copy of a section at position `at`, or after the selection (or at the end).
+function insertSection(section, message, at = null) {
   const sec = clone(section);
   sec.id = uid();
-  const at = state.sel === '__header' ? 0 : insertIndex();
-  sections().splice(at, 0, sec);
+  state.el = null;
+  sections().splice(at ?? (state.sel === '__header' ? 0 : insertIndex()), 0, sec);
   commit();
   state.sel = sec.id;
   renderCanvas();
@@ -384,7 +440,9 @@ function saveSection(id) {
 function runTool(tool, id) {
   const list = sections();
   const i = list.findIndex((s) => s.id === id);
-  if (tool === 'add') { setTab('add'); return; }
+  if (tool.startsWith('el-')) { if (state.el != null) elementTool(tool, id, state.el); return; }
+  if (tool === 'elements') { openElementPicker(id); return; }
+  if (tool === 'add') { openQuickAdd(i === -1 ? list.length : i + 1); return; }
   if (tool === 'copy') { copySection(id); return; }
   if (tool === 'save') { saveSection(id); return; }
   if (tool === 'settings') { $('#inspector').scrollTop = 0; $('#inspector .in, #inspector textarea')?.focus(); return; }
@@ -413,6 +471,124 @@ function runTool(tool, id) {
     commit(); renderCanvas(); renderPanel(); renderInspector();
     toast(`${label} deleted`, { action: 'Undo', onAction: undo });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Elements: headings, text, images, buttons, lines and space that can be added
+// to any section (site feature "elements"). They live in data.elements.
+const ELEMENTS = (has('elements') && theme.ELEMENTS) || {};
+const ELEMENT_HINTS = { heading: 'A title', text: 'Paragraphs, lists and links', image: 'A photo or picture', button: 'A link that stands out', divider: 'A thin line', spacer: 'Empty space' };
+const elementsOf = (sec) => (Array.isArray(sec?.data?.elements) ? sec.data.elements : []);
+const elKey = (secId, i) => `${secId}:elements.${i}`;
+
+function elementSummary(e) {
+  const t = String(e.text || e.label || e.caption || e.alt || '').replace(/[*_`#>[\]()!]/g, '').replace(/\s+/g, ' ').trim();
+  return t ? (t.length > 38 ? `${t.slice(0, 38)}…` : t) : ELEMENTS[e.type]?.label || 'Element';
+}
+
+// Selects element i of a section: highlights it on the page and opens it in the panel.
+function selectElement(secId, i, { scroll = false } = {}) {
+  if (state.sel !== secId) select(secId);
+  state.el = i;
+  // Only the selected element stays open in the panel.
+  state.open.forEach((k) => { if (k.startsWith(`${secId}:elements.`)) state.open.delete(k); });
+  if (i != null) state.open.add(elKey(secId, i));
+  renderInspector();
+  decorateSelection();
+  if (i == null) return;
+  setTimeout(() => {
+    $(`#inspector [data-el-card="${i}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (scroll) cdoc()?.querySelector(`[data-section-id="${CSS.escape(secId)}"] [data-el="${i}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 30);
+}
+
+function addElement(secId, type) {
+  const sec = findSection(secId);
+  if (!sec || !ELEMENTS[type]) return;
+  sec.data.elements = [...elementsOf(sec), ELEMENTS[type].defaults()];
+  const i = sec.data.elements.length - 1;
+  commit();
+  refreshSection(secId);
+  selectElement(secId, i, { scroll: true });
+  // Headings and text are ready to type over.
+  setTimeout(() => {
+    const n = cdoc()?.querySelector(`[data-section-id="${CSS.escape(secId)}"] [data-el="${i}"] [data-edit]`);
+    if (n && (type === 'heading' || type === 'text')) {
+      n.focus();
+      cdoc().getSelection()?.selectAllChildren(n);
+    }
+  }, 60);
+  toast(`${ELEMENTS[type].label} added`);
+}
+
+function elementTool(tool, secId, i) {
+  const sec = findSection(secId);
+  const list = elementsOf(sec);
+  if (!list[i]) return;
+  const open = (j) => { state.open.forEach((k) => { if (k.startsWith(`${secId}:elements.`)) state.open.delete(k); }); if (j != null) state.open.add(elKey(secId, j)); };
+  let next = i;
+  if (tool === 'el-up' || tool === 'el-down') {
+    const j = tool === 'el-up' ? i - 1 : i + 1;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    next = j;
+  } else if (tool === 'el-copy') {
+    list.splice(i + 1, 0, clone(list[i]));
+    next = i + 1;
+  } else if (tool === 'el-delete') {
+    const label = ELEMENTS[list[i].type]?.label || 'Element';
+    list.splice(i, 1);
+    next = null;
+    toast(`${label} removed`, { action: 'Undo', onAction: undo });
+  } else return;
+  open(next);
+  state.el = next;
+  commit();
+  refreshSection(secId);
+  renderInspector();
+}
+
+function openElementPicker(secId) {
+  const sec = findSection(secId);
+  if (!sec) return;
+  openModal('Add to this section', el('div', {},
+    el('p', {}, `Adds below the content of “${sec.label || BLOCKS[sec.type].label}”. Click it on the page afterwards to type or change it.`),
+    el('div', { class: 'el-tiles' }, Object.entries(ELEMENTS).map(([type, e]) =>
+      el('button', { type: 'button', class: 'el-tile', onclick: () => { closeModal(); addElement(secId, type); } },
+        ico(e.icon), el('strong', {}, e.label), el('small', {}, ELEMENT_HINTS[type] || ''))))));
+}
+
+// The “Elements” group in the section panel.
+function elementsGroup(sec) {
+  const list = elementsOf(sec);
+  const inner = el('div', { class: 'els' },
+    el('p', { class: 'p-hint' }, 'Add your own headings, text, images and buttons below this section’s content.'),
+    el('div', { class: 'el-add' }, Object.entries(ELEMENTS).map(([type, e]) =>
+      el('button', { type: 'button', class: 'el-add__btn', title: `Add ${e.label.toLowerCase()}`, onclick: () => addElement(sec.id, type) }, ico(e.icon), e.label))));
+  const items = el('div', { class: 'list-f' });
+  list.forEach((item, i) => {
+    const def = ELEMENTS[item?.type];
+    if (!def) return;
+    const isOpen = state.open.has(elKey(sec.id, i));
+    const btn = (tool, ic, title, dis) => el('button', { type: 'button', class: `ed-icon-btn ed-icon-btn--sm${tool === 'el-delete' ? ' ed-icon-btn--danger' : ''}`, title, disabled: !!dis, onclick: () => elementTool(tool, sec.id, i) }, ico(ic));
+    const head = el('div', { class: 'list-item__head', onclick: (e) => {
+      if (e.target.closest('button')) return;
+      if (isOpen) { state.open.delete(elKey(sec.id, i)); state.el = null; renderInspector(); decorateSelection(); } else selectElement(sec.id, i, { scroll: true });
+    } },
+    el('span', { class: 'chev' }, ico('chevron-right')), el('span', { class: 'el-ico' }, ico(def.icon)), el('span', { class: 't' }, elementSummary(item)),
+    btn('el-up', 'chevron-up', 'Move up', i === 0), btn('el-down', 'chevron-down', 'Move down', i === list.length - 1),
+    btn('el-copy', 'copy', 'Duplicate'), btn('el-delete', 'trash', 'Remove'));
+    const node = el('div', { class: `list-item${isOpen ? ' is-open' : ''}${state.el === i ? ' is-sel' : ''}`, 'data-el-card': String(i) }, head);
+    if (isOpen) {
+      const body = el('div', { class: 'list-item__body' });
+      renderFields(body, def.fields, sec.data, () => refreshSection(sec.id), `elements.${i}.`);
+      node.append(body);
+    }
+    items.append(node);
+  });
+  if (list.length) inner.append(items);
+  return el('details', { class: 'insp-group insp-group--els', open: true },
+    el('summary', {}, el('span', {}, 'Elements', list.length ? el('span', { class: 'badge' }, String(list.length)) : null), el('span', { class: 'chev' }, ico('chevron-down'))), inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +661,7 @@ function renderInspector() {
     const inner = el('div');
     renderFields(inner, fields, sec.data, () => refreshSection(sec.id));
     box.append(el('details', { class: 'insp-group', open }, el('summary', {}, title, el('span', { class: 'chev' }, ico('chevron-down'))), inner));
+    if (title === 'Content' && Object.keys(ELEMENTS).length) box.append(elementsGroup(sec));
   }
   box.scrollTop = scroll;
 }
@@ -975,15 +1152,48 @@ function panelAdd(box) {
           state.doc.saved = state.doc.saved.filter((x) => x.id !== sv.id); commit(); renderPanel();
         } }, ico('trash'))))));
   }
+  body.append(...blockCards((type) => addSection(type)));
+  box.append(body);
+}
+
+// Section cards grouped like the Add panel; onPick(type).
+function blockCards(onPick) {
+  const out = [];
   for (const g of BLOCK_GROUPS) {
     const entries = Object.entries(BLOCKS).filter(([, b]) => b.group === g);
     if (!entries.length) continue;
-    body.append(el('p', { class: 'p-sub' }, g), el('div', { class: 'blocks' }, entries.map(([type, b]) =>
-      el('button', { type: 'button', class: 'block-card', title: b.description, onclick: () => addSection(type) },
+    out.push(el('p', { class: 'p-sub' }, g), el('div', { class: 'blocks' }, entries.map(([type, b]) =>
+      el('button', { type: 'button', class: 'block-card', title: b.description, onclick: () => onPick(type) },
         el('div', { html: THUMBS[type] || '<div class="thumb"></div>' }),
         el('strong', {}, b.label, el('small', {}, b.description))))));
   }
-  box.append(body);
+  return out;
+}
+
+// The window behind the “+” buttons: adds a section at position `at`.
+function openQuickAdd(at) {
+  const list = sections();
+  const name = (sec) => sec.label || sectionSummary(sec) || BLOCKS[sec.type]?.label || 'section';
+  const where = !list.length ? 'Your page is empty. Pick a section to start with.'
+    : at === 0 ? `Adds at the top of the page, above “${name(list[0])}”.`
+      : at >= list.length ? `Adds at the end of the page, below “${name(list[list.length - 1])}”.`
+        : `Adds between “${name(list[at - 1])}” and “${name(list[at])}”.`;
+  const done = (fn) => () => { closeModal(); fn(); };
+  const body = el('div', { class: 'quick-add' }, el('p', {}, where));
+  const clip = getClipboard();
+  if (clip && BLOCKS[clip.type]) {
+    body.append(el('button', { type: 'button', class: 'ed-btn ed-btn--block', style: 'margin-bottom:8px', onclick: done(() => insertSection(clip, `${BLOCKS[clip.type].label} pasted`, at)) },
+      ico('clipboard2'), `Paste copied ${BLOCKS[clip.type].label}`));
+  }
+  const saved = (state.doc.saved || []).filter((sv) => BLOCKS[sv.section?.type]);
+  if (saved.length) {
+    body.append(el('p', { class: 'p-sub' }, 'My saved sections'), el('div', { class: 'saved-list' }, saved.map((sv) => el('div', { class: 'saved-item' },
+      el('button', { type: 'button', class: 'saved-item__main', onclick: done(() => insertSection(sv.section, `${sv.name} added`, at)) },
+        el('span', { class: 'layer__icon' }, ico(BLOCKS[sv.section.type].icon || 'layout')),
+        el('span', { class: 'layer__txt' }, el('strong', {}, sv.name), el('small', {}, BLOCKS[sv.section.type].label)))))));
+  }
+  body.append(...blockCards((type) => { closeModal(); addSection(type, at); }));
+  openModal('Add a section', body);
 }
 
 function panelLayers(box) {
@@ -1100,6 +1310,7 @@ function panelPages(box) {
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i <= 1, title: i === 0 ? 'Home stays first' : 'Move up', onclick: () => movePage(i, -1) }, ico('chevron-up')),
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i === 0 || i === state.doc.pages.length - 1, title: 'Move down', onclick: () => movePage(i, 1) }, ico('chevron-down')),
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => duplicatePage(i) }, ico('copy'), 'Duplicate'),
+          el('button', { type: 'button', class: 'ed-btn ed-btn--sm', title: 'Start new pages from this one', onclick: () => saveAsTemplate(i) }, ico('bookmark'), 'Save as template'),
           i > 0 ? el('button', { type: 'button', class: 'ed-btn ed-btn--sm ed-btn--danger', onclick: () => deletePage(i) }, ico('trash'), 'Delete') : null));
       item.append(b);
     }
@@ -1216,28 +1427,78 @@ function deletePage(i) {
   toast(`Page “${p.title}” deleted`, { action: 'Undo', onAction: undo });
 }
 
+// Starting points for new pages. Templates whose sections this site doesn't
+// have (an older site theme) are left out.
 const PAGE_TEMPLATES = {
-  blank: { label: 'Blank', desc: 'Just a header section', sections: ['hero'] },
-  services: { label: 'Services', desc: 'Grid, FAQ, call to action', sections: ['hero', 'services', 'faq', 'cta'] },
-  about: { label: 'About', desc: 'Story, skills, stats', sections: ['hero', 'split', 'checklist', 'stats'] },
-  landing: { label: 'Landing', desc: 'Full marketing page', sections: ['hero', 'logos', 'services', 'stats', 'steps', 'cta'] },
-  pricing: { label: 'Pricing', desc: 'Plans and FAQ', sections: ['hero', 'pricing', 'faq'] },
-  contact: { label: 'Contact', desc: 'Contact details + form', sections: ['contact'] },
+  blank: { label: 'Blank', desc: 'Just a page header', sections: ['hero'] },
+  custom: { label: 'Build your own', desc: 'Your own text, images and buttons', sections: ['hero', 'blank'] },
+  services: { label: 'Services', desc: 'What you offer, questions, call to action', sections: ['hero', 'services', 'faq', 'cta'] },
+  about: { label: 'About', desc: 'Your story, skills and numbers', sections: ['hero', 'split', 'checklist', 'stats'] },
+  landing: { label: 'Landing', desc: 'A full marketing page', sections: ['hero', 'logos', 'services', 'stats', 'steps', 'testimonials', 'cta'] },
+  pricing: { label: 'Pricing', desc: 'Plans and common questions', sections: ['hero', 'pricing', 'faq', 'cta'] },
+  booking: { label: 'Book a call', desc: 'Booking calendar and questions', sections: ['hero', 'booking', 'faq'] },
+  contact: { label: 'Contact', desc: 'Contact details, form and map', sections: ['contact', 'map'] },
+  portfolio: { label: 'Our work', desc: 'Photos and reviews', sections: ['hero', 'gallery', 'testimonials', 'cta'] },
+  team: { label: 'Team', desc: 'The people behind the business', sections: ['hero', 'team', 'cta'] },
+  faq: { label: 'FAQ', desc: 'Questions and answers', sections: ['hero', 'faq', 'cta'] },
+  text: { label: 'Text page', desc: 'Policies, terms or long text', sections: ['hero', 'text'] },
 };
+const NO_NAME = new Set(['blank', 'custom']);
+
+// A miniature of the page: its sections' thumbnails stacked.
+const pagePreview = (types) => el('div', { class: 'tpl__pv' }, types.slice(0, 5).map((t) => el('div', { html: THUMBS[t] || '<div class="thumb"></div>' })));
+
+function saveAsTemplate(i) {
+  const p = state.doc.pages[i];
+  const name = prompt('Name this page template', p.title);
+  if (name === null) return;
+  (state.doc.templates ||= []).push({ id: uid('tpl'), name: name.trim() || p.title, sections: clone(p.sections) });
+  commit();
+  toast('Saved. Find it under Pages → New → Your templates.');
+}
 
 function openAddPage() {
+  const builtIn = Object.entries(PAGE_TEMPLATES).filter(([, t]) => t.sections.every((type) => BLOCKS[type]));
   let tpl = 'blank';
+  let auto = '';
   const name = el('input', { class: 'in', placeholder: 'e.g. Pricing', value: '' });
-  const grid = el('div', { class: 'templates' });
-  const paint = () => grid.replaceChildren(...Object.entries(PAGE_TEMPLATES).map(([k, t]) =>
-    el('button', { type: 'button', class: `tpl${k === tpl ? ' is-on' : ''}`, onclick: () => { tpl = k; if (!name.value || Object.values(PAGE_TEMPLATES).some((x) => x.label === name.value)) name.value = k === 'blank' ? '' : t.label; paint(); } },
-      el('strong', {}, t.label), el('small', {}, t.desc))));
+  const box = el('div');
+  const choose = (key, suggested) => {
+    tpl = key;
+    if (!name.value.trim() || name.value === auto) { name.value = suggested; auto = suggested; }
+    paint();
+  };
+  const card = (key, label, desc, types, suggested, extra = null) => el('div', { class: `tpl${key === tpl ? ' is-on' : ''}` },
+    el('button', { type: 'button', class: 'tpl__main', onclick: () => choose(key, suggested) }, pagePreview(types), el('strong', {}, label), el('small', {}, desc)), extra);
+  function paint() {
+    const mine = (state.doc.templates || []).filter((t) => Array.isArray(t.sections));
+    box.replaceChildren(
+      el('p', { class: 'p-sub' }, 'Start from a template'),
+      el('div', { class: 'templates' }, builtIn.map(([k, t]) => card(k, t.label, t.desc, t.sections, NO_NAME.has(k) ? '' : t.label))),
+      ...(mine.length ? [el('p', { class: 'p-sub' }, 'Your templates'), el('div', { class: 'templates' }, mine.map((t) =>
+        card(`mine:${t.id}`, t.name, `${t.sections.length} section${t.sections.length === 1 ? '' : 's'}`, t.sections.map((x) => x.type), t.name,
+          el('button', { type: 'button', class: 'tpl__del', title: 'Remove this template', onclick: () => {
+            state.doc.templates = state.doc.templates.filter((x) => x.id !== t.id);
+            commit();
+            if (tpl === `mine:${t.id}`) tpl = 'blank';
+            paint();
+          } }, ico('trash')))))] : []),
+      el('p', { class: 'p-sub' }, 'Or copy one of your pages'),
+      el('div', { class: 'templates' }, state.doc.pages.map((p) =>
+        card(`page:${p.id}`, p.title, `${p.sections.length} section${p.sections.length === 1 ? '' : 's'}`, p.sections.map((x) => x.type), `${p.title} copy`))));
+    hydrateIcons(box);
+  }
   paint();
   const create = () => {
     const title = name.value.trim() || 'New page';
-    const isSub = true;
-    const secs = PAGE_TEMPLATES[tpl].sections.map((type) => newSection(type, type === 'hero' && isSub
-      ? { layout: 'center', pad: 'normal', eyebrow: title, heading: title, text: 'A short introduction to this page.', secondary: { label: '', href: '' } } : {}));
+    let secs;
+    if (tpl.startsWith('mine:')) secs = clone((state.doc.templates || []).find((t) => `mine:${t.id}` === tpl)?.sections || []);
+    else if (tpl.startsWith('page:')) secs = clone(state.doc.pages.find((p) => `page:${p.id}` === tpl)?.sections || []);
+    if (secs) secs.forEach((x) => { x.id = uid(); });
+    else {
+      secs = PAGE_TEMPLATES[tpl].sections.map((type) => newSection(type, type === 'hero'
+        ? { layout: 'center', pad: 'normal', eyebrow: title, heading: title, text: 'A short introduction to this page.', secondary: { label: '', href: '' } } : {}));
+    }
     state.doc.pages.push({ id: uid('p'), title, slug: uniqueSlug(slugify(title) || 'page'), showInNav: true, seoTitle: '', seoDescription: '', sections: secs });
     commit();
     closeModal();
@@ -1245,9 +1506,9 @@ function openAddPage() {
     toast(`Page “${title}” created`);
   };
   name.addEventListener('keydown', (e) => { if (e.key === 'Enter') create(); });
-  openModal('New page', el('div', {},
-    el('p', { class: 'p-sub' }, 'Start from'), grid,
-    el('div', { class: 'f' }, el('label', {}, 'Page name'), name),
+  openModal('New page', el('div', { class: 'new-page' },
+    el('div', { class: 'f new-page__name' }, el('label', {}, 'Page name'), name),
+    box,
     el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'ed-btn', onclick: closeModal }, 'Cancel'), el('button', { type: 'button', class: 'ed-btn ed-btn--primary', onclick: create }, 'Create page'))));
   setTimeout(() => name.focus(), 50);
 }
@@ -1962,7 +2223,7 @@ function showProblem(c) {
   if (w.kind === 'page' && state.doc.pages[w.page]) {
     if (w.page !== state.page || state.post) goToPage(w.page);
     if (w.section && findSection(w.section)) {
-      const item = String(w.field || '').match(/^(.+?)\.(\d+)\./);
+      const item = String(w.field || '').match(/^(.+?)\.(\d+)(?:\.|$)/);
       if (item) state.open.add(`${w.section}:${item[1]}.${item[2]}`);
       select(w.section, { scroll: true });
       setTimeout(() => scrollToSection(w.section, true), 40);
@@ -1996,7 +2257,7 @@ function focusField(root, field) {
 // ---------------------------------------------------------------------------
 // Find & replace across all pages and site settings
 const NON_TEXT = new Set(['id', 'type', 'icon', 'image', 'bgImage', 'logo', 'logoIcon', 'panelIcon', 'favicon', 'shareImage', 'href', 'link', 'src', 'bg', 'pad',
-  'layout', 'side', 'columns', 'style', 'ratio', 'width', 'height', 'align', 'overlay', 'anchor', 'headerStyle', 'formEndpoint', 'slug', 'url', 'kind', 'date', 'show', 'limit']);
+  'layout', 'side', 'columns', 'style', 'ratio', 'width', 'height', 'align', 'overlay', 'anchor', 'headerStyle', 'formEndpoint', 'slug', 'url', 'kind', 'date', 'show', 'limit', 'size']);
 
 function eachText(fn) {
   (function walk(node, key) {
@@ -2093,6 +2354,10 @@ function onGlobalKey(e) {
   if (inField) return;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+  // With an element selected, Delete, Ctrl+D and Escape act on the element.
+  else if (state.el != null && state.sel && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); elementTool('el-delete', state.sel, state.el); }
+  else if (state.el != null && state.sel && mod && e.key.toLowerCase() === 'd') { e.preventDefault(); elementTool('el-copy', state.sel, state.el); }
+  else if (state.el != null && state.sel && e.key === 'Escape' && $('#modal').hidden) { state.el = null; renderInspector(); decorateSelection(); }
   else if (mod && e.key.toLowerCase() === 'd' && state.sel && !isChrome(state.sel)) { e.preventDefault(); runTool('duplicate', state.sel); }
   else if (mod && e.key.toLowerCase() === 'c' && state.sel && !isChrome(state.sel) && !String(e.target.ownerDocument?.getSelection?.() || '')) { e.preventDefault(); copySection(state.sel); }
   else if (mod && e.key.toLowerCase() === 'v' && getClipboard()) { e.preventDefault(); pasteSection(); }

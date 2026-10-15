@@ -573,6 +573,139 @@ test('booking calendars: placeholder while editing, allowed in the preview', asy
   await ctx.close();
 });
 
+test('elements: add headings, text, buttons and images to a section and arrange them', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('elements')) { t.skip('the site does not support elements yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (d) => d.accept());
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  const sec = canvas.locator('.blk-split').first();
+  await sec.click();
+  const add = (label) => p.locator('#inspector .el-add__btn', { hasText: label }).click();
+  const count = () => sec.locator('[data-el]').count();
+
+  // A new heading is ready to type over on the page
+  await add('Heading');
+  await sec.locator('[data-el="0"] .el-heading[data-edit]:focus').waitFor();
+  await p.keyboard.type('Why clients stay');
+  assert.equal(await p.inputValue('#inspector [data-path="elements.0.text"]'), 'Why clients stay');
+  await add('Text');
+  await sec.locator('[data-el="1"] .el-text:focus').waitFor();
+  await p.keyboard.type('We answer within a day.');
+  await add('Button');
+  await p.fill('#inspector [data-path="elements.2.label"]', 'Call us');
+  await sec.locator('[data-el="2"] .btn', { hasText: 'Call us' }).waitFor();
+
+  // An empty image opens the library when clicked on the page
+  await add('Image');
+  await sec.locator('[data-el="3"] .figure__empty').click();
+  await p.locator('#modal .media-tile__img').first().click();
+  await sec.locator('[data-el="3"] img').waitFor();
+  await p.locator('#inspector [data-el-card="3"] .f', { hasText: 'Width' }).locator('button', { hasText: '½' }).click();
+  await sec.locator('[data-el="3"].el--half').waitFor();
+  assert.equal(await p.locator('#inspector .list-item.is-open').count(), 1, 'only the selected element is open in the panel');
+
+  // The toolbar on a selected element moves, duplicates and removes it
+  await sec.locator('[data-el="0"]').click();
+  await sec.locator('[data-el="0"] .ed-el-tools [data-tool="el-down"]').click();
+  assert.match(await sec.locator('[data-el="1"]').innerText(), /Why clients stay/);
+  await sec.locator('[data-el="1"] .ed-el-tools [data-tool="el-copy"]').click();
+  assert.equal(await count(), 5);
+  await sec.locator('[data-el="2"] .ed-el-tools [data-tool="el-delete"]').click();
+  assert.equal(await count(), 4);
+  // Delete with an element selected removes the element, not the section
+  await sec.locator('[data-el="1"]').click();
+  await p.keyboard.press('Escape'); // leave the heading text, keep the element selected
+  await p.keyboard.press('Control+d');
+  assert.equal(await count(), 5);
+  await p.keyboard.press('Delete');
+  assert.equal(await count(), 4);
+  assert.equal(await canvas.locator('.blk-split').count(), 1);
+
+  // The section toolbar adds elements too
+  await sec.locator('.ed-tools [data-tool="elements"]').click();
+  await p.locator('#modal .el-tile', { hasText: 'Line' }).click();
+  await sec.locator('[data-el="4"] .el-divider').waitFor();
+
+  await publish(p);
+  const html = read('index.html');
+  assert.match(html, /<div class="elements">.*<p>We answer within a day\.<\/p>.*<h2 class="el-heading el-heading--medium">Why clients stay<\/h2>/s);
+  assert.match(html, /<div class="el el--half el--center"><figure class="el-figure el-figure--medium el-figure--round"><img src="[^"]+"/);
+  assert.match(html, /<a class="btn btn--primary" href="\/contact\/"><span>Call us<\/span><\/a>/);
+  assert.match(html, /<hr class="el-divider">/);
+  assert.doesNotMatch(html, /data-el=|ed-el-tools|ed-ins/, 'no editor markup is published');
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('add sections between others with +, and new pages from templates', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (d) => d.accept(d.type() === 'prompt' ? 'Consult page' : undefined));
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  const order = () => canvas.locator('main > [data-section-id]').evaluateAll((ns) => ns.map((n) => [...n.classList].find((c) => c.startsWith('blk-'))));
+
+  // + at the top edge of a section adds right above it
+  const steps = canvas.locator('.blk-steps').first();
+  await steps.hover();
+  await steps.locator(':scope > .ed-ins--before').click();
+  assert.match(await p.locator('#modal .quick-add > p').first().innerText(), /^Adds between “.+” and “A simple, proven process”/);
+  await p.locator('#modal .block-card', { hasText: 'FAQ' }).click();
+  const list = await order();
+  assert.equal(list[list.indexOf('blk-steps') - 1], 'blk-faq');
+
+  // A page from a template, named after it
+  await p.click('.ed-rail button[data-tab="pages"]');
+  await p.click('#panel .p-head button:has-text("New")');
+  await p.locator('#modal .tpl', { hasText: 'Pricing' }).first().locator('.tpl__main').click();
+  assert.equal(await p.inputValue('#modal .new-page__name input'), 'Pricing');
+  await p.click('#modal button:has-text("Create page")');
+  await canvas.locator('.blk-pricing').waitFor();
+  assert.deepEqual(await order(), ['blk-hero', 'blk-pricing', 'blk-faq', 'blk-cta']);
+  assert.match(await canvas.locator('.hero__title').first().innerText(), /Pricing/);
+
+  // Save it as a template, then start another page from it
+  await p.click('#panel .page-item.is-current button:has-text("Save as template")');
+  await p.click('#panel .p-head button:has-text("New")');
+  await p.locator('#modal .tpl', { hasText: 'Consult page' }).locator('.tpl__main').click();
+  await p.fill('#modal .new-page__name input', 'Plans');
+  await p.click('#modal button:has-text("Create page")');
+  await canvas.locator('.blk-pricing').waitFor();
+  assert.match(await canvas.locator('.hero__title').first().innerText(), /Pricing/, 'the template keeps its content');
+
+  // Copy one of the pages
+  await p.click('#panel .p-head button:has-text("New")');
+  await p.locator('#modal .tpl', { hasText: 'Services' }).last().locator('.tpl__main').click();
+  assert.equal(await p.inputValue('#modal .new-page__name input'), 'Services copy');
+  await p.click('#modal button:has-text("Create page")');
+  await canvas.locator('.blk-faq').waitFor();
+
+  // An empty page offers its first section
+  await p.click('#panel .p-head button:has-text("New")');
+  await p.locator('#modal .tpl', { hasText: 'Blank' }).locator('.tpl__main').click();
+  await p.fill('#modal .new-page__name input', 'Empty');
+  await p.click('#modal button:has-text("Create page")');
+  await canvas.locator('.blk-hero').first().click();
+  await p.keyboard.press('Delete');
+  await canvas.locator('.ed-empty button').click();
+  await p.locator('#modal .block-card[title="Heading and paragraph"]').click();
+  await canvas.locator('.blk-text').waitFor();
+
+  await publish(p);
+  const content = JSON.parse(read('content/site.json'));
+  assert.deepEqual(content.pages.slice(-4).map((x) => x.title), ['Pricing', 'Plans', 'Services copy', 'Empty']);
+  assert.equal(content.templates[0].name, 'Consult page');
+  assert.match(read('pricing/index.html'), /class="sec [^"]*blk-pricing/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('connection problems are explained in plain words and never change the site', async () => {
   for (const [token, expected, fix] of [
     ['ok', /Connected to .* as site-owner\. Publishing will work/, null],
