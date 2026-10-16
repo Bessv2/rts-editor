@@ -706,6 +706,83 @@ test('add sections between others with +, and new pages from templates', async (
   await ctx.close();
 });
 
+test('business hours, the call button and the quote form', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('hours')) { t.skip('the site does not support these yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (d) => d.accept());
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="site"]');
+
+  // Hours: weekdays to start with, then Saturday mornings and longer weekdays
+  await p.locator('#panel .f', { hasText: 'Show business hours' }).locator('input').check();
+  const footer = canvas.locator('.site-footer__hours');
+  await footer.filter({ hasText: 'Mon–Fri 9am–5pm · Sat–Sun closed' }).waitFor();
+  const row = (day) => p.locator('#panel .hours-row', { hasText: day });
+  await row('Sat').locator('input[type=checkbox]').check();
+  await row('Sat').locator('input[type=time]').nth(1).fill('13:00');
+  await row('Sat').locator('input[type=time]').nth(1).dispatchEvent('change');
+  await row('Mon').locator('input[type=time]').nth(1).fill('18:00');
+  await row('Mon').locator('input[type=time]').nth(1).dispatchEvent('change');
+  await p.click('#panel button:has-text("Copy Monday to weekdays")');
+  await footer.filter({ hasText: 'Mon–Fri 9am–6pm · Sat 9am–1pm · Sun closed' }).waitFor();
+  assert.match(await footer.locator('.open-status').innerText(), /^(Open now|Closed)/);
+  assert.match(await p.locator('#panel .hours-summary').innerText(), /Mon–Fri 9am–6pm/);
+
+  // Call button: needs a phone number, shown in the Mobile preview
+  await p.locator('#panel .f', { hasText: 'Show a “Call now” button' }).locator('input').check();
+  await p.locator('#panel .f__help--warn', { hasText: 'Add your phone number' }).waitFor();
+  await p.fill('#panel [data-path="phone"]', '(555) 123-4567');
+  await p.click('#device-toggle [data-device="mobile"]');
+  await canvas.locator('.callbar a[href="tel:5551234567"]').waitFor();
+  await p.click('#device-toggle [data-device="desktop"]');
+  assert.ok(await canvas.locator('.callbar').isHidden(), 'phones only');
+
+  // Quote form from the Add panel
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.click('.block-card:has-text("Quote request")');
+  await canvas.locator('.quote__form fieldset.choices').first().waitFor();
+  assert.equal(await p.locator('#inspector .list-item').count(), 4, 'four starter questions');
+
+  // Without a login in front, Settings says so and no account is shown
+  await p.click('.ed-rail button[data-tab="site"]');
+  await p.locator('#panel .login-state', { hasText: 'No login yet' }).waitFor();
+  assert.ok(await p.locator('#account').isHidden());
+
+  await publish(p);
+  const html = read('index.html');
+  assert.match(html, /class="site-footer__hours">Mon–Fri 9am–6pm · Sat 9am–1pm · Sun closed <span class="open-status" data-open-status/);
+  assert.match(html, /<div class="callbar callbar--phones"><a class="callbar__btn" href="tel:5551234567">/);
+  assert.match(html, /class="contact__form quote__form"/);
+  assert.match(html, /"openingHoursSpecification"/);
+  const site = JSON.parse(read('content/site.json')).site;
+  assert.equal(site.hours.week.sat, '09:00-13:00');
+  assert.equal(site.callButton.enabled, true);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('behind a login, the editor shows who is signed in', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  await ctx.route('**/cdn-cgi/access/get-identity', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ email: 'owner@example.com', name: 'Owner' }) }));
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  await p.locator('#account').waitFor();
+  assert.equal(await p.locator('#account .ed-account__btn').innerText(), 'O');
+  await p.click('#account .ed-account__btn');
+  assert.equal(await p.locator('#account .ed-account__email').innerText(), 'owner@example.com');
+  assert.equal(await p.locator('#account a', { hasText: 'Sign out' }).getAttribute('href'), '/cdn-cgi/access/logout');
+  await p.click('.ed-rail button[data-tab="site"]');
+  await p.locator('#panel .login-state.is-on', { hasText: 'Signed in as owner@example.com' }).waitFor();
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('connection problems are explained in plain words and never change the site', async () => {
   for (const [token, expected, fix] of [
     ['ok', /Connected to .* as site-owner\. Publishing will work/, null],

@@ -46,6 +46,7 @@ const state = {
   history: [], future: [], snap: '', published: '',
   open: new Set(), commitTimer: 0, ghToken: '', clipboard: null, post: null,
   el: null, // index of the selected element inside the selected section
+  access: null, // { email, name } when the editor is behind a login (Cloudflare Access)
   base: '', // content/site.json version (git sha) this draft started from
 };
 
@@ -159,6 +160,7 @@ function initCanvas() {
       d.addEventListener('focusin', onCanvasFocusIn);
       d.addEventListener('focusout', onCanvasFocusOut);
       d.addEventListener('submit', (e) => e.preventDefault(), true);
+      d.body.dataset.device = state.device;
       resolve();
     });
     frame.srcdoc = canvasHTML();
@@ -477,7 +479,7 @@ function runTool(tool, id) {
 // Elements: headings, text, images, buttons, lines and space that can be added
 // to any section (site feature "elements"). They live in data.elements.
 const ELEMENTS = (has('elements') && theme.ELEMENTS) || {};
-const ELEMENT_HINTS = { heading: 'A title', text: 'Paragraphs, lists and links', image: 'A photo or picture', button: 'A link that stands out', divider: 'A thin line', spacer: 'Empty space' };
+const ELEMENT_HINTS = { heading: 'A title', text: 'Paragraphs, lists and links', image: 'A photo or picture', button: 'A link that stands out', hours: 'Your opening hours', divider: 'A thin line', spacer: 'Empty space' };
 const elementsOf = (sec) => (Array.isArray(sec?.data?.elements) ? sec.data.elements : []);
 const elKey = (secId, i) => `${secId}:elements.${i}`;
 
@@ -833,7 +835,7 @@ function fieldControl(f, path, val, change, target, onRender) {
       return el('p', { class: 'note' }, f.text);
     case 'text':
     case 'link': {
-      const input = el('input', { class: 'in', type: 'text', value: val ?? '', 'data-path': path, list: f.type === 'link' ? linkSuggestions() : null,
+      const input = el('input', { class: 'in', type: 'text', value: val ?? '', 'data-path': path, placeholder: f.placeholder || null, list: f.type === 'link' ? linkSuggestions() : null,
         oninput: (e) => change(path, e.target.value, { soon: true }) });
       const choose = f.type === 'link' ? chooseLinkBtn(() => openLinkPicker((href) => change(path, href, { structural: true }), { from: pageOfTarget(target), current: input.value.trim() })) : null;
       put(wrap, label, choose ? el('div', { class: 'f-link' }, input, choose) : input, help);
@@ -916,7 +918,7 @@ function fieldControl(f, path, val, change, target, onRender) {
     }
     case 'segmented': {
       const seg = el('div', { class: 'ed-seg ed-seg--full' }, f.options.map(([v, l]) =>
-        el('button', { type: 'button', class: String(val) === v ? 'is-on' : '', onclick: () => change(path, v, { structural: true }) }, l)));
+        el('button', { type: 'button', class: String(val ?? f.default) === v ? 'is-on' : '', onclick: () => change(path, v, { structural: true }) }, l)));
       put(wrap, el('span', { class: 'f__label' }, f.label), seg, help);
       return wrap;
     }
@@ -1085,6 +1087,7 @@ const THUMBS = {
   map: '<div class="thumb" style="background:radial-gradient(circle at 1px 1px,#93c5fd 1.2px,transparent 0) 0 0/8px 8px,#eff6ff;display:grid;place-items:center"><span style="width:12px;height:12px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#2563eb;display:block"></span></div>',
   team: '<div class="thumb"><div class="t-row" style="justify-items:center"><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div></div></div>',
   image: '<div class="thumb"><div class="t-img"></div></div>',
+  quote: '<div class="thumb"><i class="t-dark" style="width:40%;margin:0 auto"></i><div class="t-box" style="height:40px;display:grid;gap:3px;padding:4px;align-content:center"><div class="t-row"><i></i><i></i></div><div class="t-row"><i class="t-acc" style="flex:.4"></i><i style="flex:.4"></i><i style="flex:.4"></i></div><i class="t-acc" style="height:6px"></i></div></div>',
   booking: '<div class="thumb"><i class="t-dark" style="width:40%;margin:0 auto"></i><div class="t-box" style="height:38px;display:grid;grid-template-columns:repeat(5,1fr);gap:3px;padding:4px;align-content:center"><i></i><i class="t-acc"></i><i></i><i></i><i class="t-acc"></i><i></i><i></i><i class="t-acc"></i><i></i><i></i></div></div>',
 };
 
@@ -1564,6 +1567,20 @@ function panelSite(box) {
   ];
   body.append(el('p', { class: 'p-sub' }, 'Business'));
   renderFields(body, fields, s, () => renderCanvas(), '', renderPanel);
+  if (has('hours')) panelHours(body, s);
+  if (has('call-button')) {
+    body.append(el('p', { class: 'p-sub' }, 'Call button'));
+    const on = (d) => !!d.callButton?.enabled;
+    renderFields(body, [
+      { key: 'callButton.enabled', label: 'Show a “Call now” button', type: 'toggle', help: 'Floats at the bottom of the screen and calls your phone number in one tap.' },
+      { key: 'callButton.label', label: 'Button text', type: 'text', placeholder: 'Call now', when: on },
+      { key: 'callButton.text', label: 'Also show a “Text us” button', type: 'toggle', when: on },
+      { key: 'callButton.textLabel', label: 'Text button text', type: 'text', placeholder: 'Text us', when: (d) => on(d) && !!d.callButton?.text },
+      { key: 'callButton.show', label: 'Show on', type: 'segmented', default: 'phones', options: [['phones', 'Phones only'], ['all', 'All screens']], when: on },
+    ], s, () => renderCanvas(), '', renderPanel);
+    if (s.callButton?.enabled && String(s.phone || '').replace(/\D/g, '').length < 3) body.append(el('p', { class: 'f__help f__help--warn' }, 'Add your phone number above. The button is only shown once there is one.'));
+    else if (s.callButton?.enabled && s.callButton.show !== 'all') body.append(el('p', { class: 'f__help' }, 'Switch the preview size at the top to Mobile to see it.'));
+  }
   body.append(el('p', { class: 'p-sub' }, 'Announcement bar'));
   renderFields(body, [
     { key: 'announcement.enabled', label: 'Show a bar above the header', type: 'toggle' },
@@ -1580,6 +1597,7 @@ function panelSite(box) {
     { key: 'shareImage', label: 'Share image', type: 'image', help: 'Shown when your site is shared on social media or messages. 1200×630 works best.' },
   ], s, () => {}, '', renderPanel);
   if (has('redirects')) panelRedirects(body);
+  panelEditorLogin(body);
   body.append(el('p', { class: 'p-sub' }, 'Header & footer'),
     el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: () => select('__header', { scroll: true }) }, ico('layout'), 'Edit header & footer'));
   body.append(el('p', { class: 'p-sub' }, 'Backup'),
@@ -1591,6 +1609,101 @@ function panelSite(box) {
 }
 
 const LANGUAGES = [['en', 'English'], ['en-US', 'English (United States)'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['it', 'Italian'], ['zh', 'Chinese'], ['vi', 'Vietnamese'], ['ko', 'Korean'], ['ar', 'Arabic']];
+
+// Business hours (site feature "hours"): a weekly schedule in the business's
+// time zone. Stored as site.hours.week = { mon: '08:00-18:00', …, sun: '' }.
+const TIME_ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+const BROWSER_TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; } })();
+
+function panelHours(body, s) {
+  const DAYS = theme.DAYS;
+  body.append(el('p', { class: 'p-sub' }, 'Business hours'));
+  const hours = s.hours || {};
+  const changed = (rerender = true) => { commit(); renderCanvas(); if (rerender) renderPanel(); else paintSummary(); };
+  body.append(el('div', { class: 'f' }, el('label', { class: 'switch' }, 'Show business hours', el('input', { type: 'checkbox', 'data-path': 'hours', checked: !!hours.enabled, onchange: (e) => {
+    s.hours = { timezone: BROWSER_TZ, note: '', week: { mon: '09:00-17:00', tue: '09:00-17:00', wed: '09:00-17:00', thu: '09:00-17:00', fri: '09:00-17:00', sat: '', sun: '' }, ...s.hours, enabled: e.target.checked };
+    changed();
+  } })), el('p', { class: 'f__help' }, 'Shown in the Contact section and the footer with “Open now”, and given to Google.')));
+  if (!hours.enabled) return;
+  const week = (hours.week ||= {});
+  const summary = el('p', { class: 'hours-summary' });
+  const paintSummary = () => {
+    const st = theme.openStatus(s.hours);
+    summary.replaceChildren(el('span', {}, theme.hoursSummary(s.hours) || 'Closed every day'),
+      st ? el('span', { class: `hours-badge${st.open ? ' is-open' : ''}` }, st.text) : null);
+  };
+  const rows = DAYS.map(([k, full]) => {
+    const r = theme.parseRange(week[k]);
+    const raw = String(week[k] || '').split('-');
+    const open = el('input', { type: 'time', class: 'in', value: r ? raw[0] : '09:00', disabled: !week[k], 'data-path': `hours.week.${k}`, 'aria-label': `${full} opening time` });
+    const close = el('input', { type: 'time', class: 'in', value: r ? raw[1] : '17:00', disabled: !week[k], 'aria-label': `${full} closing time` });
+    const isOpen = el('input', { type: 'checkbox', checked: !!week[k], 'aria-label': `Open on ${full}` });
+    const save = () => { week[k] = isOpen.checked ? `${open.value || '09:00'}-${close.value || '17:00'}` : ''; open.disabled = close.disabled = !isOpen.checked; row.classList.toggle('is-closed', !isOpen.checked); changed(false); };
+    isOpen.addEventListener('change', save);
+    open.addEventListener('change', save);
+    close.addEventListener('change', save);
+    const row = el('div', { class: `hours-row${week[k] ? '' : ' is-closed'}${week[k] && !r ? ' is-bad' : ''}` },
+      el('label', { class: 'hours-row__day' }, isOpen, el('span', {}, full.slice(0, 3))), open, el('span', { class: 'hours-row__to' }, 'to'), close,
+      el('span', { class: 'hours-row__closed' }, 'Closed'));
+    return row;
+  });
+  const copy = el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => {
+    ['tue', 'wed', 'thu', 'fri'].forEach((k) => { week[k] = week.mon || ''; });
+    changed();
+    toast('Monday’s hours copied to Tuesday–Friday');
+  } }, ico('copy'), 'Copy Monday to weekdays');
+  const zones = TIME_ZONES.includes(hours.timezone) || !hours.timezone ? TIME_ZONES : [hours.timezone, ...TIME_ZONES];
+  const tz = el('select', { onchange: (e) => { s.hours.timezone = e.target.value; changed(false); } },
+    (zones.length ? zones : [hours.timezone || BROWSER_TZ]).map((z) => el('option', { value: z, selected: z === (hours.timezone || BROWSER_TZ) }, z.replace(/_/g, ' '))));
+  const note = el('input', { class: 'in', value: hours.note || '', placeholder: 'e.g. Emergency support by appointment', 'data-path': 'hours.note', oninput: (e) => { s.hours.note = e.target.value; commitSoon(); renderCanvas(); } });
+  paintSummary();
+  body.append(el('div', { class: 'hours-grid' }, rows), el('div', { class: 'hours-actions' }, copy), summary,
+    el('div', { class: 'f' }, el('label', {}, 'Time zone'), tz, el('p', { class: 'f__help' }, '“Open now” is worked out for this time zone, wherever the visitor is.')),
+    el('div', { class: 'f' }, el('label', {}, 'Note (optional)'), note));
+}
+
+// Editor login. The editor can sit behind Cloudflare Access (sign in with
+// Google or a code sent to your email). Cloudflare then answers
+// /cdn-cgi/access/get-identity on the editor's own address with who is signed in.
+async function accessIdentity() {
+  try {
+    const res = await fetch('/cdn-cgi/access/get-identity', { cache: 'no-store', credentials: 'same-origin' });
+    if (!res.ok || !/json/.test(res.headers.get('content-type') || '')) return null;
+    const id = await res.json();
+    return id?.email ? { email: String(id.email), name: String(id.name || '') } : null;
+  } catch { return null; }
+}
+
+function showAccount(id) {
+  const box = $('#account');
+  if (!box || !id) return;
+  const btn = $('.ed-account__btn', box);
+  const menu = $('.ed-account__menu', box);
+  btn.textContent = (id.name || id.email).trim().charAt(0).toUpperCase();
+  btn.title = `Signed in as ${id.email}`;
+  $('.ed-account__email', box).textContent = id.email;
+  box.hidden = false;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+    btn.setAttribute('aria-expanded', String(!menu.hidden));
+  });
+  document.addEventListener('click', (e) => { if (!box.contains(e.target)) { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); } });
+}
+
+const LOGIN_GUIDE = 'https://github.com/Bessv2/rts-editor#editor-login';
+function panelEditorLogin(body) {
+  body.append(el('p', { class: 'p-sub' }, 'Editor login'));
+  if (state.access) {
+    body.append(el('div', { class: 'login-state is-on' }, ico('shield-check'),
+      el('div', {}, el('strong', {}, 'Protected with a login'), el('small', {}, `Signed in as ${state.access.email}. Only people you allow can open the editor.`),
+        el('a', { href: '/cdn-cgi/access/logout' }, 'Sign out'))));
+    return;
+  }
+  body.append(el('div', { class: 'login-state' }, ico('lock'),
+    el('div', {}, el('strong', {}, 'No login yet'), el('small', {}, 'Anyone who finds this address can open the editor. They can’t publish without your GitHub token, but you can hide the editor completely behind a Google or email sign-in.'),
+      el('a', { href: LOGIN_GUIDE, target: '_blank', rel: 'noopener' }, 'How to set up the login'))));
+}
 
 function panelSearchEngines(body, s) {
   const langs = LANGUAGES.some(([v]) => v === (s.lang || 'en')) ? LANGUAGES : [...LANGUAGES, [s.lang, s.lang]];
@@ -2335,6 +2448,8 @@ function updateTopbar() {
 function setDevice(d) {
   state.device = d;
   $('#frame-wrap').dataset.device = d;
+  // The canvas can be narrower than a computer screen, so phones-only things follow the chosen size.
+  if (cdoc()?.body) cdoc().body.dataset.device = d;
   $$('#device-toggle button').forEach((b) => b.classList.toggle('is-on', b.dataset.device === d));
 }
 
@@ -2410,6 +2525,7 @@ async function boot() {
   const changedElsewhere = draft?.base && publishedSha && publishedSha !== draft.base && !known.includes(publishedSha);
   restoreUrl();
 
+  accessIdentity().then((id) => { state.access = id; showAccount(id); if (state.tab === 'site') renderPanel(); });
   await initCanvas();
   const checkupTab = $('.ed-rail [data-tab="checkup"]');
   if (checkupTab) checkupTab.hidden = !has('audit');
