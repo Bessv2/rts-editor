@@ -482,3 +482,14 @@ kbd { white-space: nowrap; font: 600 11px ui-monospace, monospace; padding: 2px 
 .blog-filter small { margin-left: 4px; font-size: 11px; font-weight: 700; opacity: .7; }
 .blog-find { width: 100%; margin-bottom: 8px; }
 .md-count { margin: 6px 0 0 !important; font-size: 12px; color: var(--e-muted); text-align: right; }
+
+/* What's new (Help tab) */
+.ed-rail__dot { position: absolute; top: 6px; right: 14px; width: 9px; height: 9px; border-radius: 50%; background: var(--e-accent); box-shadow: 0 0 0 2px var(--e-panel); }
+.news { display: grid; gap: 8px; padding-bottom: 4px; }
+.news .p-sub { margin-bottom: 0; }
+.news__item { display: grid; gap: 4px; justify-items: start; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--e-line); background: var(--e-soft); }
+.news__item.is-new { border-color: #bfdbfe; background: #eff6ff; }
+.news__item strong { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.news__item p { margin: 0; font-size: 12.5px; color: var(--e-muted); line-height: 1.45; }
+.news__item .ed-btn { margin-top: 2px; }
+.badge--new { background: var(--e-accent); color: #fff; }

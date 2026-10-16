@@ -46,6 +46,8 @@ publishing until they are fixed.
 
 ### More options
 
+- **What's new**: the Help tab lists recent improvements with a **Show me** button; a dot on
+  Help and a short note appear once when there is something new.
 - **Jump to anything** (Ctrl+K, or ⌘K on a Mac, or the search box next to the page menu): type a
   few letters to go to a page, section, blog post, panel or setting, or to publish, preview,
   add a page or write a post.

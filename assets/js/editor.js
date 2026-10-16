@@ -1972,8 +1972,52 @@ function panelRedirects(body) {
   body.append(el('div', { class: 'f-row redirect-add' }, from, to), el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: add }, ico('plus'), 'Add redirect'));
 }
 
+// What's new: recent improvements, newest first. v groups a release; items
+// newer than the last one seen get a "New" badge, and the Help button a dot.
+// feature: shown only when the connected site supports it.
+const WHATS_NEW = [
+  { v: 2, title: 'Jump to anything', text: 'Press Ctrl+K (⌘K on a Mac) and type a few letters to go to any page, section, blog post or setting.', show: () => openPalette() },
+  { v: 2, title: 'Find your drafts', text: 'The Blog tab can show just Drafts, Live or Scheduled posts, and find one by name. The word count shows while you write.', show: () => setTab('blog') },
+  { v: 2, feature: 'task-lists', title: 'Checklists in posts', text: 'The tick-box button in the writing toolbar starts a checklist visitors can tick off. Long posts start with an “In this post” list, and every post has a Print button.' },
+  { v: 2, feature: 'post-updated', title: '“Updated” date for posts', text: 'Refreshed an older post? Set “Last updated” and it shows the new date (and tells Google).' },
+  { v: 2, feature: 'announcement-dates', title: 'Announcement dates', text: 'Show the bar above the header only between two days, e.g. for holiday hours.', show: () => openSetting('site', 'Announcement bar') },
+  { v: 2, feature: 'not-found', title: 'Your own “page not found”', text: 'Change the wording people see after an old or mistyped link.', show: () => openSetting('site', 'Page not found') },
+  { v: 2, feature: 'blog-search', title: 'Search box for the blog', text: 'Turn on “Add a search box” in a Blog feed section so visitors can find posts by any word.' },
+  { v: 1, title: 'Drag and drop', text: 'Drag sections by the grip in their toolbar, and elements by the grip in theirs, even into another section.' },
+  { v: 1, feature: 'elements', title: 'Elements', text: 'Add a heading, text, image, button, icon box, checklist, quote, video or line to any section.' },
+  { v: 1, feature: 'hours', title: 'Business hours, call button and quote form', text: 'Set your hours once (with “Open now”), add a Call now button for phones, or a quote request form.', show: () => openSetting('site', 'Business hours') },
+  { v: 1, feature: 'analytics', title: 'Visitor stats and reviews', text: 'Count visitors without cookies, and send happy customers to your Google review page.', show: () => openSetting('site', 'Visitor stats') },
+  { v: 1, title: 'Editor login', text: 'Protect the editor with a Google sign-in or a code sent to your email.', show: () => openSetting('site', 'Editor login') },
+];
+const NEWS_KEY = 'whats-new-seen';
+const newsItems = () => WHATS_NEW.filter((n) => !n.feature || has(n.feature));
+const newsLatest = () => Math.max(0, ...newsItems().map((n) => n.v));
+// Release 1 came before this list existed, so a first visit counts it as seen.
+const newsSeen = () => { try { return Number(localStorage.getItem(NEWS_KEY)) || 1; } catch { return newsLatest(); } };
+function markNewsSeen() {
+  try { localStorage.setItem(NEWS_KEY, String(newsLatest())); } catch { /* storage blocked */ }
+  $('.ed-rail [data-tab="help"] .ed-rail__dot')?.remove();
+}
+function announceNews() {
+  const seen = newsSeen();
+  const fresh = newsItems().filter((n) => n.v > seen);
+  if (!fresh.length) return;
+  $('.ed-rail [data-tab="help"]')?.append(el('b', { class: 'ed-rail__dot', title: 'What’s new' }));
+  toast(`New in the editor: ${fresh[0].title.toLowerCase()}${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { action: 'See what’s new', onAction: () => setTab('help'), duration: 12000 });
+}
+
 function panelHelp(box) {
   box.append(panelHead('How it works', 'help'));
+  const seen = newsSeen();
+  const news = newsItems();
+  if (news.length) {
+    box.append(el('div', { class: 'p-body news' }, el('p', { class: 'p-sub' }, 'What’s new'),
+      ...news.slice(0, 7).map((n) => el('div', { class: `news__item${n.v > seen ? ' is-new' : ''}` },
+        el('strong', {}, n.title, n.v > seen ? el('span', { class: 'badge badge--new' }, 'New') : null),
+        el('p', {}, n.text),
+        n.show ? el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: n.show }, 'Show me') : null))));
+    markNewsSeen();
+  }
   box.append(el('div', { class: 'p-body' },
     el('ol', { class: 'help-steps' },
       el('li', {}, el('strong', {}, 'Edit text on the page. '), 'Click any text in the preview and type.'),
@@ -2941,6 +2985,7 @@ async function boot() {
     }
   }
   syncUrl();
+  if (state.tab === 'help') markNewsSeen(); else announceNews();
 
   $$('.ed-rail button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
   $$('#device-toggle button').forEach((b) => b.addEventListener('click', () => setDevice(b.dataset.device)));

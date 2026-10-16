@@ -952,6 +952,29 @@ test('blog tab: filter drafts, find an entry, word count and last updated date',
   await ctx.close();
 });
 
+test('what’s new: a note on first visit, the list in Help, then quiet', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  const note = p.locator('.toast', { hasText: 'New in the editor: jump to anything' });
+  await note.waitFor();
+  assert.ok(await p.locator('.ed-rail [data-tab="help"] .ed-rail__dot').isVisible());
+  await note.locator('button', { hasText: 'See what’s new' }).click();
+  await p.locator('#panel .news__item.is-new', { hasText: 'Jump to anything' }).waitFor();
+  assert.equal(await p.locator('#panel .news__item.is-new', { hasText: 'Drag and drop' }).count(), 0, 'earlier features are not marked new');
+  assert.equal(await p.locator('.ed-rail [data-tab="help"] .ed-rail__dot').count(), 0);
+  await p.locator('#panel .news__item', { hasText: 'Jump to anything' }).locator('button', { hasText: 'Show me' }).click();
+  await p.locator('.palette__in').waitFor();
+  await p.keyboard.press('Escape');
+  await p.reload({ waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
+  await p.waitForTimeout(500);
+  assert.equal(await p.locator('.toast', { hasText: 'New in the editor' }).count(), 0, 'shown once');
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('jump to anything with Ctrl+K', async () => {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   await mockGitHub(ctx);
