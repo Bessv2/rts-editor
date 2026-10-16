@@ -528,8 +528,8 @@ test('the link picker links pages, sections, posts, email and web addresses', as
   await body.fill('Write to us today.');
   await body.evaluate((ta) => { ta.focus(); ta.setSelectionRange(0, 11); });
   await p.click('#panel .md-tools button[title="Link"]');
-  await modal.locator('.link-row', { hasText: /^Email / }).click();
   const email = JSON.parse(await readFile(join(SITE_DIR, 'content/site.json'), 'utf8')).site.email;
+  await modal.locator('.link-row', { hasText: `Email ${email}` }).click();
   assert.equal(await body.inputValue(), `[Write to us](mailto:${email}) today.`);
   assert.deepEqual(dialogs, [], 'no browser prompts');
 
