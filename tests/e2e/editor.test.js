@@ -877,6 +877,43 @@ test('visitor stats and the review page in Settings', async (t) => {
   await ctx.close();
 });
 
+test('checklists and the contents list in posts', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('task-lists')) { t.skip('the site does not support these yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+
+  // Pasted checklists keep their tick boxes
+  const pasted = await p.evaluate(async () => {
+    const m = await import('./assets/js/html-to-md.js');
+    return [
+      m.htmlToMarkdown('<ul><li><input type="checkbox" checked> Back up</li><li><label><input type="checkbox"> Update</label></li></ul>'),
+      m.htmlToMarkdown('<b id="docs-internal-guid-1"><ul><li role="checkbox" aria-checked="true"><p><span>Done</span></p></li><li role="checkbox" aria-checked="false"><p><span>To do</span></p></li></ul></b>'),
+    ];
+  });
+  assert.deepEqual(pasted, ['- [x] Back up\n- [ ] Update', '- [x] Done\n- [ ] To do']);
+
+  await p.click('.ed-rail button[data-tab="blog"]');
+  await p.click('button:has-text("New post")');
+  const body = p.locator('#panel textarea[data-path="body"]');
+  await body.fill('## One\nA\n\n## Two\nB\n\n## Three\n');
+  await body.press('End');
+  await p.click('#panel .md-tools button[title="Checklist (tick boxes)"]');
+  await p.keyboard.type('Change the router password');
+  assert.match(await body.inputValue(), /## Three\n- \[ \] Change the router password$/);
+  await canvas.locator('.post__body .task', { hasText: 'Change the router password' }).locator('input[type=checkbox]').waitFor();
+  await canvas.locator('.post__toc a[href="#two"]').waitFor();
+  const toc = p.locator('#panel [data-path="toc"]');
+  assert.ok(await toc.isChecked(), 'on by default');
+  await toc.uncheck();
+  await canvas.locator('.post__toc').waitFor({ state: 'detached' });
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('jump to anything with Ctrl+K', async () => {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   await mockGitHub(ctx);

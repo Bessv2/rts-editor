@@ -53,6 +53,10 @@ publishing until they are fixed.
   bar only then, e.g. for holiday hours. **Page not found** (Settings): your own heading, message
   and button for the page people see after an old or mistyped link, with **Preview the page**.
   **Search box** (Blog feed section): visitors type a word to find posts.
+- **Checklists in posts**: the tick-box button in the writing toolbar starts a checklist
+  (`- [ ] item`); visitors can tick items and their ticks are remembered on their device. Long
+  posts start with an **In this post** list of their headings (switch it off per post), and every
+  post has a **Print** button with a clean printed layout.
 - **Visitor stats** (Settings): count visitors with Cloudflare Web Analytics or GoatCounter (free,
   no cookies); paste the token or code and use **View your stats**. **Review page** (Settings →
   Business): your Google review link, used by the “Leave a review” button in Testimonials and the
