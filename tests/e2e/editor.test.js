@@ -93,8 +93,11 @@ async function publish(p) {
   await p.locator('.log .ok', { hasText: 'Done' }).waitFor();
 }
 
-async function newPage(ctx) {
+// news: show the one-time "What's new" note (only its own test wants it; elsewhere it
+// would sit over the bottom of the page while a test clicks or drags there).
+async function newPage(ctx, { news = false } = {}) {
   const p = await ctx.newPage();
+  if (!news) await p.addInitScript(() => { try { localStorage.setItem('whats-new-seen', '999'); } catch { /* storage blocked */ } });
   p.errors = [];
   p.on('pageerror', (e) => p.errors.push(e.message));
   p.on('console', (m) => m.type() === 'error' && !isNoise(m.text()) && p.errors.push(m.text()));
@@ -703,12 +706,21 @@ test('element cards in the panel reorder by dragging their grip', async (t) => {
   await mockGitHub(ctx);
   const p = await newPage(ctx);
   await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
   const sec = p.frameLocator('#canvas').locator('.blk-split').first();
   await sec.click({ position: { x: 5, y: 5 } });
   for (const label of ['Heading', 'Text', 'Button']) await p.locator('#inspector .el-add__btn', { hasText: new RegExp(`^${label}$`) }).click();
   await p.keyboard.press('Escape');
-  const grip = await p.locator('#inspector [data-el-card="0"] .el-grip').boundingBox();
-  const target = await p.locator('#inspector [data-el-card="1"]').boundingBox(); // a closed card, fully on screen
+  await p.locator('#inspector [data-el-card="2"]').waitFor();
+  // Measure once the panel has stopped moving (it re-renders after Escape).
+  let grip; let target;
+  for (let i = 0; i < 20; i++) {
+    const g = await p.locator('#inspector [data-el-card="0"] .el-grip').boundingBox();
+    const t = await p.locator('#inspector [data-el-card="1"]').boundingBox(); // a closed card, fully on screen
+    if (grip && JSON.stringify([g, t]) === JSON.stringify([grip, target])) break;
+    [grip, target] = [g, t];
+    await p.waitForTimeout(50);
+  }
   await p.mouse.move(grip.x + 5, grip.y + 5);
   await p.mouse.down();
   for (let i = 1; i <= 12; i++) await p.mouse.move(grip.x + 5 + ((target.x + 40 - grip.x - 5) * i) / 12, grip.y + 5 + ((target.y + target.height - 4 - grip.y - 5) * i) / 12);
@@ -954,7 +966,7 @@ test('blog tab: filter drafts, find an entry, word count and last updated date',
 
 test('what’s new: a note on first visit, the list in Help, then quiet', async () => {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
-  const p = await newPage(ctx);
+  const p = await newPage(ctx, { news: true });
   await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
   await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
   const note = p.locator('.toast', { hasText: 'New in the editor: jump to anything' });
