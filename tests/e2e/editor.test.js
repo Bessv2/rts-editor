@@ -641,6 +641,84 @@ test('elements: add headings, text, buttons and images to a section and arrange 
   await ctx.close();
 });
 
+test('drag and drop: sections and elements on the page, element cards in the panel', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('elements')) { t.skip('the site does not support elements yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1400 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  const order = () => canvas.locator('main > [data-section-id]').evaluateAll((ns) => ns.map((n) => [...n.classList].find((c) => c.startsWith('blk-'))));
+  // A real drag with small mouse steps; both points must be on screen (scrolling mid-drag cancels it).
+  const drag = async (from, to, { x = 20, y = 10 } = {}) => {
+    const a = await from.boundingBox();
+    const b = await to.boundingBox();
+    const ax = a.x + a.width / 2; const ay = a.y + a.height / 2; const bx = b.x + x; const by = b.y + y;
+    await p.mouse.move(ax, ay);
+    await p.mouse.down();
+    for (let i = 1; i <= 12; i++) await p.mouse.move(ax + ((bx - ax) * i) / 12, ay + ((by - ay) * i) / 12);
+    await p.mouse.up();
+  };
+
+  // A section dragged by its grip onto the top half of another lands above it
+  const services = canvas.locator('.blk-services').first();
+  await services.click({ position: { x: 5, y: 5 } });
+  const logos = canvas.locator('.blk-logos').first();
+  await logos.evaluate((n) => n.scrollIntoView({ block: 'center' }));
+  await drag(services.locator('.ed-tools .ed-grip'), logos, { x: 200, y: (await logos.boundingBox()).height * 0.3 });
+  let list = await order();
+  assert.equal(list[list.indexOf('blk-logos') - 1], 'blk-services');
+  await p.locator('.toast', { hasText: 'Section moved' }).waitFor();
+
+  // Elements: reorder by dragging on the page, then move one into the next section
+  const sec = canvas.locator('.blk-split').first();
+  await sec.click({ position: { x: 5, y: 5 } });
+  for (const label of ['Heading', 'Text', 'Button']) await p.locator('#inspector .el-add__btn', { hasText: new RegExp(`^${label}$`) }).click();
+  await p.keyboard.press('Escape');
+  await sec.locator('[data-el="0"]').evaluate((n) => n.scrollIntoView({ block: 'center' }));
+  await sec.locator('[data-el="0"]').click({ position: { x: 2, y: 2 } });
+  const third = sec.locator('[data-el="2"]');
+  await drag(sec.locator('[data-el="0"] .ed-el-tools .ed-grip'), third, { x: 20, y: (await third.boundingBox()).height - 4 });
+  assert.match(await sec.locator('[data-el="2"]').innerText(), /A new heading/, 'the heading is now last');
+  assert.match(await sec.locator('[data-el="0"]').innerText(), /Write your text/);
+  const next = canvas.locator('.blk-steps').first();
+  await drag(sec.locator('[data-el="2"] .ed-el-tools .ed-grip'), next, { x: 30, y: 30 });
+  await next.locator('[data-el="0"] .el-heading').waitFor();
+  assert.equal(await sec.locator('[data-el]').count(), 2);
+
+  // Layers lists elements under their section; picking one there selects it on the page
+  await p.click('.ed-rail button[data-tab="layers"]');
+  await p.locator('.layer--el', { hasText: 'Write your text' }).click();
+  await sec.locator('[data-el="0"].is-el-selected').waitFor();
+
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('element cards in the panel reorder by dragging their grip', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('elements')) { t.skip('the site does not support elements yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1400 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const sec = p.frameLocator('#canvas').locator('.blk-split').first();
+  await sec.click({ position: { x: 5, y: 5 } });
+  for (const label of ['Heading', 'Text', 'Button']) await p.locator('#inspector .el-add__btn', { hasText: new RegExp(`^${label}$`) }).click();
+  await p.keyboard.press('Escape');
+  const grip = await p.locator('#inspector [data-el-card="0"] .el-grip').boundingBox();
+  const target = await p.locator('#inspector [data-el-card="1"]').boundingBox(); // a closed card, fully on screen
+  await p.mouse.move(grip.x + 5, grip.y + 5);
+  await p.mouse.down();
+  for (let i = 1; i <= 12; i++) await p.mouse.move(grip.x + 5 + ((target.x + 40 - grip.x - 5) * i) / 12, grip.y + 5 + ((target.y + target.height - 4 - grip.y - 5) * i) / 12);
+  await p.mouse.up();
+  await sec.locator('[data-el="1"]', { hasText: 'A new heading' }).waitFor();
+  assert.match(await sec.locator('[data-el="0"]').innerText(), /Write your text/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('add sections between others with +, and new pages from templates', async () => {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   const { read } = await mockGitHub(ctx);

@@ -443,3 +443,12 @@ kbd { font: 600 11px ui-monospace, monospace; padding: 2px 6px; border-radius: 5
 .login-state strong { font-size: 13px; }
 .login-state small { color: var(--e-muted); font-size: 12px; line-height: 1.45; }
 .login-state a { font-size: 12.5px; font-weight: 600; color: var(--e-accent); }
+
+/* Dragging element cards; elements in Layers */
+.list-item__head .el-grip { display: inline-flex; color: var(--e-line-2); cursor: grab; margin-left: -4px; }
+.list-item:hover .el-grip { color: var(--e-muted); }
+.list-item.drop-before { box-shadow: 0 -3px 0 var(--e-accent); }
+.list-item.drop-after { box-shadow: 0 3px 0 var(--e-accent); }
+.layer--el { margin-left: 26px; padding-top: 4px; padding-bottom: 4px; }
+.layer--el .layer__icon { width: 24px; height: 24px; font-size: 12px; }
+.layer--el strong { font-size: 12px; font-weight: 500; }

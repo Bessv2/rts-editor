@@ -61,6 +61,9 @@ publishing until they are fixed.
   too). Give elements a width (½, ⅓, ⅔) to put them side by side. **Empty section** in the Add
   panel starts with nothing but elements.
 - **Add between sections**: hover a section and press the **+** at its top or bottom edge.
+- **Drag and drop**: drag a section by the grip at the left of its toolbar, or an element by the
+  grip in its small toolbar (also into another section). Element cards in the panel and sections
+  in Layers drag too, and Layers lists each section's elements.
 - **Page templates**: Pages → New offers ready-made pages (services, pricing, booking, team,
   FAQ, text page and more), any of your own pages to copy, and pages you saved with **Save as
   template**.

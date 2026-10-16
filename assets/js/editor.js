@@ -160,6 +160,11 @@ function initCanvas() {
       d.addEventListener('focusin', onCanvasFocusIn);
       d.addEventListener('focusout', onCanvasFocusOut);
       d.addEventListener('submit', (e) => e.preventDefault(), true);
+      d.addEventListener('dragstart', onCanvasDragStart);
+      d.addEventListener('dragenter', onCanvasDragOver);
+      d.addEventListener('dragover', onCanvasDragOver);
+      d.addEventListener('drop', onCanvasDrop);
+      d.addEventListener('dragend', endCanvasDrag);
       d.body.dataset.device = state.device;
       resolve();
     });
@@ -230,9 +235,10 @@ function decorateSelection() {
     elNode.classList.add('is-el-selected');
     const et = d.createElement('div');
     et.className = 'ed-el-tools';
-    et.innerHTML = [['el-up', 'chevron-up', 'Move up', state.el === 0], ['el-down', 'chevron-down', 'Move down', state.el === count - 1],
-      ['el-copy', 'copy', 'Duplicate'], ['el-delete', 'trash', 'Remove']]
-      .map(([t, ic, title, dis]) => `<button type="button" data-tool="${t}" title="${title}"${dis ? ' disabled' : ''}>${icon(ic)}</button>`).join('');
+    et.innerHTML = `<span class="ed-grip" draggable="true" data-drag="el" title="Drag to move (also into another section)">${icon('grip')}</span>`
+      + [['el-up', 'chevron-up', 'Move up', state.el === 0], ['el-down', 'chevron-down', 'Move down', state.el === count - 1],
+        ['el-copy', 'copy', 'Duplicate'], ['el-delete', 'trash', 'Remove']]
+        .map(([t, ic, title, dis]) => `<button type="button" data-tool="${t}" title="${title}"${dis ? ' disabled' : ''}>${icon(ic)}</button>`).join('');
     elNode.append(et);
   }
   const chip = d.createElement('div');
@@ -244,7 +250,7 @@ function decorateSelection() {
   const hidden = findSection(state.sel).hidden;
   const tools = d.createElement('div');
   tools.className = 'ed-tools';
-  tools.innerHTML = [
+  tools.innerHTML = `<span class="ed-grip" draggable="true" data-drag="section" title="Drag to move">${icon('grip')}</span>` + [
     ['up', 'chevron-up', 'Move up', i === 0], ['down', 'chevron-down', 'Move down', i === sections().length - 1],
     ['duplicate', 'copy', 'Duplicate'], ['hide', hidden ? 'eye' : 'eye-off', hidden ? 'Show on live site' : 'Hide on live site'],
     ...(Object.keys(ELEMENTS).length ? [['elements', 'plus', 'Add text, image or button to this section']] : []),
@@ -271,6 +277,106 @@ function addInserts(root) {
       n.append(b);
     }
   }
+}
+
+// Drag and drop on the page: sections by the grip in their toolbar, elements
+// by the grip in theirs (onto another element, or into any section).
+let drag = null; // { kind: 'section', id } or { kind: 'el', sec, i }
+function onCanvasDragStart(e) {
+  const g = e.target.closest?.('[data-drag]');
+  if (!g || !state.sel) { if (!e.target.closest?.('[data-edit]')) e.preventDefault(); return; }
+  drag = g.dataset.drag === 'el' && state.el != null ? { kind: 'el', sec: state.sel, i: state.el } : { kind: 'section', id: state.sel };
+  const node = drag.kind === 'el' ? g.closest('[data-el]') : g.closest('[data-section-id]');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', drag.kind);
+  try { e.dataTransfer.setDragImage(node, 24, 24); } catch { /* not supported */ }
+  node.classList.add('ed-dragging');
+}
+
+function dropTarget(e) {
+  if (!drag) return null;
+  const sec = e.target.closest?.('[data-section-id]');
+  if (!sec || isChrome(sec.dataset.sectionId)) return null;
+  if (drag.kind === 'section') {
+    const r = sec.getBoundingClientRect();
+    return { node: sec, before: e.clientY < r.top + r.height / 2 };
+  }
+  const elNode = e.target.closest('[data-el]');
+  if (elNode) {
+    const r = elNode.getBoundingClientRect();
+    const wide = r.width > elNode.parentElement.getBoundingClientRect().width * 0.8;
+    return { node: elNode, before: wide ? e.clientY < r.top + r.height / 2 : e.clientX < r.left + r.width / 2, side: !wide };
+  }
+  return { node: sec, into: true };
+}
+
+function clearDrop() {
+  $$('.ed-drop-before, .ed-drop-after, .ed-drop-into', cdoc()).forEach((n) => n.classList.remove('ed-drop-before', 'ed-drop-after', 'ed-drop-into', 'ed-drop-side'));
+}
+
+function onCanvasDragOver(e) {
+  const t = dropTarget(e);
+  if (!t) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  clearDrop();
+  t.node.classList.add(t.into ? 'ed-drop-into' : t.before ? 'ed-drop-before' : 'ed-drop-after');
+  if (t.side) t.node.classList.add('ed-drop-side');
+}
+
+function onCanvasDrop(e) {
+  const t = dropTarget(e);
+  clearDrop();
+  if (!t) return;
+  e.preventDefault();
+  if (drag.kind === 'section') {
+    const list = sections();
+    const targetId = t.node.dataset.sectionId;
+    if (targetId === drag.id) { endCanvasDrag(); return; }
+    const [moved] = list.splice(list.findIndex((x) => x.id === drag.id), 1);
+    list.splice(list.findIndex((x) => x.id === targetId) + (t.before ? 0 : 1), 0, moved);
+    const id = moved.id;
+    // Redraw after the browser has finished the drag (dragend), not while the dragged node is in use.
+    afterDrag(() => {
+      commit(); renderCanvas(); renderPanel();
+      toast('Section moved', { action: 'Undo', onAction: undo });
+      setTimeout(() => scrollToSection(id), 20);
+    });
+    return;
+  }
+  const from = findSection(drag.sec);
+  const item = elementsOf(from)[drag.i];
+  const toId = t.node.closest('[data-section-id]').dataset.sectionId;
+  const to = findSection(toId);
+  if (!item || !to) { endCanvasDrag(); return; }
+  let j = t.into ? elementsOf(to).length : Number(t.node.dataset.el) + (t.before ? 0 : 1);
+  from.data.elements.splice(drag.i, 1);
+  if (from === to && drag.i < j) j -= 1;
+  to.data.elements = elementsOf(to);
+  to.data.elements.splice(j, 0, item);
+  afterDrag(() => {
+    state.open.forEach((k) => { if (/:elements\./.test(k)) state.open.delete(k); });
+    state.sel = toId;
+    state.el = j;
+    state.open.add(elKey(toId, j));
+    commit(); renderCanvas(); renderInspector();
+    if (state.tab === 'layers') renderPanel();
+  });
+}
+
+let pendingRedraw = null;
+function afterDrag(fn) {
+  pendingRedraw = fn;
+  setTimeout(() => { if (pendingRedraw === fn) endCanvasDrag(); }, 0);
+}
+
+function endCanvasDrag() {
+  drag = null;
+  clearDrop();
+  $$('.ed-dragging', cdoc()).forEach((n) => n.classList.remove('ed-dragging'));
+  const fn = pendingRedraw;
+  pendingRedraw = null;
+  fn?.();
 }
 
 function insertAt(btn) {
@@ -479,7 +585,7 @@ function runTool(tool, id) {
 // Elements: headings, text, images, buttons, lines and space that can be added
 // to any section (site feature "elements"). They live in data.elements.
 const ELEMENTS = (has('elements') && theme.ELEMENTS) || {};
-const ELEMENT_HINTS = { heading: 'A title', text: 'Paragraphs, lists and links', image: 'A photo or picture', button: 'A link that stands out', review: 'Ask for a Google review', hours: 'Your opening hours', divider: 'A thin line', spacer: 'Empty space' };
+const ELEMENT_HINTS = { heading: 'A title', text: 'Paragraphs, lists and links', image: 'A photo or picture', button: 'A link that stands out', feature: 'Icon, title and text', checklist: 'Points with ticks', quote: 'A quote that stands out', video: 'YouTube or Vimeo', review: 'Ask for a Google review', hours: 'Your opening hours', divider: 'A thin line', spacer: 'Empty space' };
 const elementsOf = (sec) => (Array.isArray(sec?.data?.elements) ? sec.data.elements : []);
 const elKey = (secId, i) => `${secId}:elements.${i}`;
 
@@ -560,7 +666,8 @@ function openElementPicker(secId) {
         ico(e.icon), el('strong', {}, e.label), el('small', {}, ELEMENT_HINTS[type] || ''))))));
 }
 
-// The “Elements” group in the section panel.
+// The “Elements” group in the section panel. Cards can be dragged to reorder.
+let cardDrag = null;
 function elementsGroup(sec) {
   const list = elementsOf(sec);
   const inner = el('div', { class: 'els' },
@@ -577,10 +684,39 @@ function elementsGroup(sec) {
       if (e.target.closest('button')) return;
       if (isOpen) { state.open.delete(elKey(sec.id, i)); state.el = null; renderInspector(); decorateSelection(); } else selectElement(sec.id, i, { scroll: true });
     } },
-    el('span', { class: 'chev' }, ico('chevron-right')), el('span', { class: 'el-ico' }, ico(def.icon)), el('span', { class: 't' }, elementSummary(item)),
+    el('span', { class: 'el-grip', title: 'Drag to reorder' }, ico('grip')), el('span', { class: 'chev' }, ico('chevron-right')), el('span', { class: 'el-ico' }, ico(def.icon)), el('span', { class: 't' }, elementSummary(item)),
     btn('el-up', 'chevron-up', 'Move up', i === 0), btn('el-down', 'chevron-down', 'Move down', i === list.length - 1),
     btn('el-copy', 'copy', 'Duplicate'), btn('el-delete', 'trash', 'Remove'));
-    const node = el('div', { class: `list-item${isOpen ? ' is-open' : ''}${state.el === i ? ' is-sel' : ''}`, 'data-el-card': String(i) }, head);
+    const node = el('div', { class: `list-item${isOpen ? ' is-open' : ''}${state.el === i ? ' is-sel' : ''}`, 'data-el-card': String(i),
+      ondragenter: (e) => { if (cardDrag != null) e.preventDefault(); },
+      ondragover: (e) => {
+        if (cardDrag == null) return;
+        e.preventDefault();
+        if (cardDrag === i) return;
+        const r = node.getBoundingClientRect();
+        node.classList.toggle('drop-before', e.clientY < r.top + r.height / 2);
+        node.classList.toggle('drop-after', e.clientY >= r.top + r.height / 2);
+      },
+      ondragleave: () => node.classList.remove('drop-before', 'drop-after'),
+      ondrop: (e) => {
+        e.preventDefault();
+        const before = node.classList.contains('drop-before');
+        node.classList.remove('drop-before', 'drop-after');
+        if (cardDrag == null || cardDrag === i) return;
+        const [moved] = list.splice(cardDrag, 1);
+        let j = i + (before ? 0 : 1);
+        if (cardDrag < j) j -= 1;
+        list.splice(j, 0, moved);
+        cardDrag = null;
+        state.open.forEach((k) => { if (k.startsWith(`${sec.id}:elements.`)) state.open.delete(k); });
+        state.el = j;
+        state.open.add(elKey(sec.id, j));
+        commit(); refreshSection(sec.id); renderInspector();
+      },
+      ondragend: () => { cardDrag = null; } }, head);
+    // The card's header is the handle (its fields stay selectable as normal).
+    head.draggable = true;
+    head.addEventListener('dragstart', (e) => { cardDrag = i; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'element'); });
     if (isOpen) {
       const body = el('div', { class: 'list-item__body' });
       renderFields(body, def.fields, sec.data, () => refreshSection(sec.id), `elements.${i}.`);
@@ -1243,6 +1379,13 @@ function panelLayers(box) {
       el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show' : 'Hide', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
       el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Delete', onclick: () => runTool('delete', sec.id) }, ico('trash'))));
     list.append(li);
+    // The section's elements, indented under it.
+    elementsOf(sec).forEach((item, n) => {
+      const def = ELEMENTS[item?.type];
+      if (!def) return;
+      list.append(el('li', { class: `layer layer--el${state.sel === sec.id && state.el === n ? ' is-sel' : ''}`, onclick: () => selectElement(sec.id, n, { scroll: true }) },
+        el('span', { class: 'layer__icon' }, ico(def.icon)), el('span', { class: 'layer__txt' }, el('strong', {}, elementSummary(item)), el('small', {}, def.label))));
+    });
   });
   list.append(fixed('__footer', 'Footer'));
   body.append(list);
