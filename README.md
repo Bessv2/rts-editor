@@ -46,6 +46,10 @@ publishing until they are fixed.
 
 ### More options
 
+- **Visitor stats** (Settings): count visitors with Cloudflare Web Analytics or GoatCounter (free,
+  no cookies); paste the token or code and use **View your stats**. **Review page** (Settings →
+  Business): your Google review link, used by the “Leave a review” button in Testimonials and the
+  **Review button** element. **Resource links** (Add panel): cards of helpful links grouped by topic.
 - **Business hours** (Settings): tick the days you're open and set the times; the Contact section,
   the footer and the **Opening hours** element show them with “Open now”, worked out for your
   time zone. **Call button** (Settings): a “Call now” (and “Text us”) button that floats at the
