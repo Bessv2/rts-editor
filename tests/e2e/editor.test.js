@@ -528,8 +528,8 @@ test('the link picker links pages, sections, posts, email and web addresses', as
   await body.fill('Write to us today.');
   await body.evaluate((ta) => { ta.focus(); ta.setSelectionRange(0, 11); });
   await p.click('#panel .md-tools button[title="Link"]');
-  await modal.locator('.link-row', { hasText: /^Email / }).click();
   const email = JSON.parse(await readFile(join(SITE_DIR, 'content/site.json'), 'utf8')).site.email;
+  await modal.locator('.link-row', { hasText: `Email ${email}` }).click();
   assert.equal(await body.inputValue(), `[Write to us](mailto:${email}) today.`);
   assert.deepEqual(dialogs, [], 'no browser prompts');
 
@@ -910,6 +910,44 @@ test('checklists and the contents list in posts', async (t) => {
   assert.ok(await toc.isChecked(), 'on by default');
   await toc.uncheck();
   await canvas.locator('.post__toc').waitFor({ state: 'detached' });
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('blog tab: filter drafts, find an entry, word count and last updated date', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('post-updated')) { t.skip('the site does not support these yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  // More than six entries, so the find box appears, and one draft
+  await p.click('.ed-rail button[data-tab="blog"]');
+  for (let i = 0; i < 7; i++) await p.click('button:has-text("New post")').then(() => p.click('#panel .p-head button[title="Back to all entries"]'));
+  await p.click('#panel .post-row >> nth=0');
+  await p.locator('#panel .f', { hasText: 'Show on website' }).locator('input').uncheck();
+  await p.fill('#panel [data-path="title"]', 'Passkeys for the office');
+  await p.click('#panel .p-head button[title="Back to all entries"]');
+
+  const rows = p.locator('#panel .post-row');
+  const all = await rows.count();
+  await p.click('#panel .blog-filter button[data-show="draft"]');
+  const drafts = await rows.count();
+  assert.ok(drafts >= 1 && drafts < all);
+  assert.equal(await p.locator('#panel .post-row .badge', { hasText: 'Draft' }).count(), drafts, 'only drafts are listed');
+  await p.locator('#panel .p-hint', { hasText: 'Drafts aren’t on your website' }).waitFor();
+  await p.click('#panel .blog-filter button[data-show="all"]');
+  await p.fill('#panel .blog-find', 'passkeys for');
+  assert.equal(await rows.count(), 1);
+  await rows.first().click();
+
+  // Word count under the article, and the last updated date on the page
+  await p.fill('#panel textarea[data-path="body"]', Array(450).fill('word').join(' '));
+  assert.equal(await p.locator('#panel .md-count').innerText(), '450 words · about 2 min read');
+  await p.fill('#panel [data-path="date"]', '2026-01-05');
+  await p.fill('#panel [data-path="updated"]', '2026-02-10');
+  await canvas.locator('.post-meta__updated', { hasText: 'Updated Feb 10, 2026' }).waitFor();
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });

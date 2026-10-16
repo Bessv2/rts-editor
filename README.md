@@ -57,6 +57,9 @@ publishing until they are fixed.
   (`- [ ] item`); visitors can tick items and their ticks are remembered on their device. Long
   posts start with an **In this post** list of their headings (switch it off per post), and every
   post has a **Print** button with a clean printed layout.
+- **Blog tab**: filter by Live, Drafts or Scheduled, and find an entry by title or tag. While
+  writing, the word count and reading time show under the article. **Last updated** marks a
+  refreshed post “Updated” with that date (and tells Google).
 - **Visitor stats** (Settings): count visitors with Cloudflare Web Analytics or GoatCounter (free,
   no cookies); paste the token or code and use **View your stats**. **Review page** (Settings →
   Business): your Google review link, used by the “Leave a review” button in Testimonials and the

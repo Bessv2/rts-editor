@@ -48,6 +48,7 @@ const state = {
   el: null, // index of the selected element inside the selected section
   access: null, // { email, name } when the editor is behind a login (Cloudflare Access)
   base: '', // content/site.json version (git sha) this draft started from
+  blogShow: 'all', blogQuery: '', // Blog tab filter
 };
 
 // ---------------------------------------------------------------------------
@@ -1039,7 +1040,14 @@ function fieldControl(f, path, val, change, target, onRender) {
         ] : []),
         [ico('image'), 'Image', () => openMediaPicker((src) => { const nl = ta.value.indexOf('\n', ta.selectionEnd); const at = nl === -1 ? ta.value.length : nl; ta.setRangeText(`\n![](${mediaRef(src)})\n`, at, at, 'end'); fire(); })],
       ];
-      put(wrap, label, el('div', { class: 'md-tools' }, tools.map(([content, title, fn]) => el('button', { type: 'button', title, onclick: fn }, content))), ta, help);
+      // count: words and reading time (about 200 words a minute, like the site).
+      const count = f.count ? el('p', { class: 'md-count' }) : null;
+      const paintCount = () => {
+        const words = ta.value.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\]\([^)]*\)/g, ' ').replace(/[#>*_`[\]-]+/g, ' ').split(/\s+/).filter(Boolean).length;
+        count.textContent = words ? `${words.toLocaleString()} words · about ${Math.max(1, Math.round(words / 200))} min read` : '';
+      };
+      if (count) { ta.addEventListener('input', paintCount); paintCount(); }
+      put(wrap, label, el('div', { class: 'md-tools' }, tools.map(([content, title, fn]) => el('button', { type: 'button', title, onclick: fn }, content))), ta, count, help);
       return wrap;
     }
     case 'textarea': {
@@ -2249,13 +2257,38 @@ function panelBlog(box) {
     body.append(el('div', { class: 'p-callout' }, ico('arrow-right'), 'Add a “Blog feed” section to a page to show your posts.'));
   }
   const posts = [...state.doc.posts].sort(byDate);
-  body.append(el('p', { class: 'p-sub' }, `All entries (${posts.length})`));
-  body.append(posts.length
-    ? el('div', { class: 'post-list' }, posts.map((p) => el('button', { type: 'button', class: 'post-row', onclick: () => openPost(p.id) },
+  // Filter by status (with counts) and, for longer lists, by words in the title or tags.
+  const status = (p) => (p.published === false ? 'draft' : isScheduled(p) ? 'scheduled' : 'live');
+  const counts = posts.reduce((c, p) => { c[status(p)] += 1; return c; }, { live: 0, draft: 0, scheduled: 0 });
+  if (state.blogShow !== 'all' && !counts[state.blogShow]) state.blogShow = 'all';
+  const list = el('div', { class: 'post-list' });
+  const none = el('p', { class: 'p-hint', hidden: true }, 'No entries match.');
+  const paintList = () => {
+    const q = state.blogQuery.trim().toLowerCase();
+    const shown = posts.filter((p) => (state.blogShow === 'all' || status(p) === state.blogShow)
+      && (!q || `${postTitle(p)} ${p.tags || ''}`.toLowerCase().includes(q)));
+    list.replaceChildren(...shown.map((p) => el('button', { type: 'button', class: 'post-row', onclick: () => openPost(p.id) },
       el('span', { class: 'layer__icon' }, ico((p.kind || 'post') === 'blurb' ? 'sparkle' : 'pen')),
       el('span', { class: 'layer__txt' }, el('strong', {}, postTitle(p) || 'Untitled'), el('small', {}, `${formatDate(p.date)} · ${(p.kind || 'post') === 'blurb' ? 'Blurb' : 'Post'}`)),
-      p.published === false ? el('span', { class: 'badge' }, 'Draft') : isScheduled(p) ? el('span', { class: 'badge badge--soon', title: `Goes live on ${formatDate(p.date)}` }, 'Scheduled') : null)))
-    : el('p', { class: 'p-hint' }, 'Nothing here yet. Write your first post!'));
+      status(p) === 'draft' ? el('span', { class: 'badge' }, 'Draft') : status(p) === 'scheduled' ? el('span', { class: 'badge badge--soon', title: `Goes live on ${formatDate(p.date)}` }, 'Scheduled') : null)));
+    none.hidden = !!shown.length || !posts.length;
+  };
+  const filters = [['all', 'All', posts.length], ['live', 'Live', counts.live], ['draft', 'Drafts', counts.draft], ['scheduled', 'Scheduled', counts.scheduled]]
+    .filter(([k, , n]) => k === 'all' || n);
+  body.append(el('p', { class: 'p-sub' }, `All entries (${posts.length})`));
+  if (filters.length > 2) {
+    body.append(el('div', { class: 'ed-seg ed-seg--full blog-filter', role: 'group', 'aria-label': 'Show' }, filters.map(([k, label, n]) =>
+      el('button', { type: 'button', class: state.blogShow === k ? 'is-on' : '', 'data-show': k, onclick: () => { state.blogShow = k; renderPanel(); } }, label, el('small', {}, String(n))))));
+  }
+  if (posts.length > 6) {
+    body.append(el('input', { class: 'in blog-find', type: 'search', placeholder: 'Find an entry…', value: state.blogQuery, 'aria-label': 'Find an entry',
+      oninput: (e) => { state.blogQuery = e.target.value; paintList(); } }));
+  }
+  if (counts.draft && state.blogShow === 'draft') {
+    body.append(el('p', { class: 'p-hint' }, 'Drafts aren’t on your website. Open one and turn on “Show on website” when it’s ready, then Publish.'));
+  }
+  paintList();
+  body.append(posts.length ? list : el('p', { class: 'p-hint' }, 'Nothing here yet. Write your first post!'), none);
   box.append(body);
 }
 
@@ -2282,6 +2315,7 @@ function panelPostEditor(box, p) {
   renderFields(body, [{ key: 'title', label: blurb ? 'Title (optional)' : 'Title', type: 'text' }], p, autoSlug, '', renderPanel);
   renderFields(body, [
     { key: 'date', label: 'Date', type: 'date', help: has('scheduled-posts') ? 'Pick a future date to schedule it: it goes live on that day by itself.' : undefined },
+    ...(!blurb && has('post-updated') ? [{ key: 'updated', label: 'Last updated (optional)', type: 'date', help: 'Made changes to an older post? Pick today and it shows “Updated” with this date.' }] : []),
     { key: 'tags', label: 'Tags', type: 'text', help: 'Separate with commas, e.g. Security, Tips' },
     ...(blurb ? [
       { key: 'body', label: 'Blurb', type: 'markdown', rows: 6, placeholder: 'A quick thought, tip or something you liked…' },
@@ -2289,7 +2323,7 @@ function panelPostEditor(box, p) {
     ] : [
       { key: 'image', label: 'Cover image', type: 'image' },
       { key: 'summary', label: 'Summary', type: 'textarea', help: 'One or two sentences shown on the blog card and in search results.' },
-      { key: 'body', label: 'Article', type: 'markdown', rows: 18 },
+      { key: 'body', label: 'Article', type: 'markdown', rows: 18, count: true },
       ...(has('post-toc') ? [{ key: 'toc', label: 'Start with an “In this post” list', type: 'toggle', default: true,
         help: 'Links to each ## heading. Shown when the article has three or more.' }] : []),
       { key: 'link', label: 'Source link (optional)', type: 'text', help: 'Credit an article you are writing about.' },
