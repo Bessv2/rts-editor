@@ -46,6 +46,13 @@ publishing until they are fixed.
 
 ### More options
 
+- **Jump to anything** (Ctrl+K, or ⌘K on a Mac, or the search box next to the page menu): type a
+  few letters to go to a page, section, blog post, panel or setting, or to publish, preview,
+  add a page or write a post.
+- **Announcement dates** (Settings → Announcement bar): pick a first and last day to show the
+  bar only then, e.g. for holiday hours. **Page not found** (Settings): your own heading, message
+  and button for the page people see after an old or mistyped link, with **Preview the page**.
+  **Search box** (Blog feed section): visitors type a word to find posts.
 - **Visitor stats** (Settings): count visitors with Cloudflare Web Analytics or GoatCounter (free,
   no cookies); paste the token or code and use **View your stats**. **Review page** (Settings →
   Business): your Google review link, used by the “Leave a review” button in Testimonials and the
