@@ -584,7 +584,7 @@ test('elements: add headings, text, buttons and images to a section and arrange 
   const canvas = p.frameLocator('#canvas');
   const sec = canvas.locator('.blk-split').first();
   await sec.click();
-  const add = (label) => p.locator('#inspector .el-add__btn', { hasText: label }).click();
+  const add = (label) => p.locator('#inspector .el-add__btn', { hasText: new RegExp(`^${label}$`) }).click();
   const count = () => sec.locator('[data-el]').count();
 
   // A new heading is ready to type over on the page
@@ -762,6 +762,39 @@ test('business hours, the call button and the quote form', async (t) => {
   const site = JSON.parse(read('content/site.json')).site;
   assert.equal(site.hours.week.sat, '09:00-13:00');
   assert.equal(site.callButton.enabled, true);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('visitor stats and the review page in Settings', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('analytics')) { t.skip('the site does not support these yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (d) => d.accept());
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="site"]');
+  await p.locator('#panel .f', { hasText: 'Count visitors with' }).locator('select').selectOption('goatcounter');
+  await p.fill('#panel [data-path="analytics.id"]', 'roe tech');
+  await p.locator('#panel .stats-state.f__help--warn', { hasText: 'doesn’t look right' }).waitFor();
+  await p.fill('#panel [data-path="analytics.id"]', 'roetech');
+  assert.equal(await p.locator('#panel .stats-state a', { hasText: 'View your stats' }).getAttribute('href'), 'https://roetech.goatcounter.com');
+
+  // A review button in Testimonials appears once there is a review page
+  await p.fill('#panel [data-path="reviewUrl"]', 'https://g.page/r/abc/review');
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.click('.block-card:has-text("Testimonials")');
+  await p.locator('#inspector .f', { hasText: 'Show a “Leave a review” button' }).locator('input').check();
+  await canvas.locator('.quotes__review a[href="https://g.page/r/abc/review"]').waitFor();
+
+  await publish(p);
+  const html = read('index.html');
+  assert.match(html, /data-goatcounter="https:\/\/roetech.goatcounter.com\/count"/);
+  assert.match(html, /script-src 'self' https:\/\/gc.zgo.at;/);
+  assert.match(html, /class="btns quotes__review"/);
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });

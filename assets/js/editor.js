@@ -479,7 +479,7 @@ function runTool(tool, id) {
 // Elements: headings, text, images, buttons, lines and space that can be added
 // to any section (site feature "elements"). They live in data.elements.
 const ELEMENTS = (has('elements') && theme.ELEMENTS) || {};
-const ELEMENT_HINTS = { heading: 'A title', text: 'Paragraphs, lists and links', image: 'A photo or picture', button: 'A link that stands out', hours: 'Your opening hours', divider: 'A thin line', spacer: 'Empty space' };
+const ELEMENT_HINTS = { heading: 'A title', text: 'Paragraphs, lists and links', image: 'A photo or picture', button: 'A link that stands out', review: 'Ask for a Google review', hours: 'Your opening hours', divider: 'A thin line', spacer: 'Empty space' };
 const elementsOf = (sec) => (Array.isArray(sec?.data?.elements) ? sec.data.elements : []);
 const elKey = (secId, i) => `${secId}:elements.${i}`;
 
@@ -1087,6 +1087,7 @@ const THUMBS = {
   map: '<div class="thumb" style="background:radial-gradient(circle at 1px 1px,#93c5fd 1.2px,transparent 0) 0 0/8px 8px,#eff6ff;display:grid;place-items:center"><span style="width:12px;height:12px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#2563eb;display:block"></span></div>',
   team: '<div class="thumb"><div class="t-row" style="justify-items:center"><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div><div style="display:grid;gap:3px;justify-items:center"><span style="width:18px;height:18px;border-radius:50%;background:#93c5fd;display:block"></span><i style="width:24px"></i></div></div></div>',
   image: '<div class="thumb"><div class="t-img"></div></div>',
+  resources: '<div class="thumb"><i class="t-dark" style="width:40%;margin:0 auto"></i><div class="t-row"><div class="t-box" style="height:26px;display:grid;grid-template-columns:8px 1fr;gap:3px;padding:3px;align-content:center"><i class="t-acc" style="height:8px"></i><i></i></div><div class="t-box" style="height:26px;display:grid;grid-template-columns:8px 1fr;gap:3px;padding:3px;align-content:center"><i class="t-acc" style="height:8px"></i><i></i></div><div class="t-box" style="height:26px;display:grid;grid-template-columns:8px 1fr;gap:3px;padding:3px;align-content:center"><i class="t-acc" style="height:8px"></i><i></i></div></div></div>',
   quote: '<div class="thumb"><i class="t-dark" style="width:40%;margin:0 auto"></i><div class="t-box" style="height:40px;display:grid;gap:3px;padding:4px;align-content:center"><div class="t-row"><i></i><i></i></div><div class="t-row"><i class="t-acc" style="flex:.4"></i><i style="flex:.4"></i><i style="flex:.4"></i></div><i class="t-acc" style="height:6px"></i></div></div>',
   booking: '<div class="thumb"><i class="t-dark" style="width:40%;margin:0 auto"></i><div class="t-box" style="height:38px;display:grid;grid-template-columns:repeat(5,1fr);gap:3px;padding:4px;align-content:center"><i></i><i class="t-acc"></i><i></i><i></i><i class="t-acc"></i><i></i><i></i><i class="t-acc"></i><i></i><i></i></div></div>',
 };
@@ -1564,6 +1565,8 @@ function panelSite(box) {
     { key: 'phone', label: 'Phone', type: 'text' },
     { key: 'location', label: 'Location / service area', type: 'text' },
     { key: 'formEndpoint', label: 'Form endpoint (optional)', type: 'text', help: 'Paste your Formspree (or similar) https:// URL to receive form messages by email. Spam protection is built in. Leave empty to open the visitor’s email app instead.' },
+    ...(has('reviews') ? [{ key: 'reviewUrl', label: 'Review page (optional)', type: 'text', placeholder: 'https://g.page/r/…/review',
+      help: 'Where “Leave us a review” buttons go. In your Google Business Profile choose “Ask for reviews” and copy the link.' }] : []),
   ];
   body.append(el('p', { class: 'p-sub' }, 'Business'));
   renderFields(body, fields, s, () => renderCanvas(), '', renderPanel);
@@ -1581,6 +1584,7 @@ function panelSite(box) {
     if (s.callButton?.enabled && String(s.phone || '').replace(/\D/g, '').length < 3) body.append(el('p', { class: 'f__help f__help--warn' }, 'Add your phone number above. The button is only shown once there is one.'));
     else if (s.callButton?.enabled && s.callButton.show !== 'all') body.append(el('p', { class: 'f__help' }, 'Switch the preview size at the top to Mobile to see it.'));
   }
+  if (has('analytics')) panelStats(body, s);
   body.append(el('p', { class: 'p-sub' }, 'Announcement bar'));
   renderFields(body, [
     { key: 'announcement.enabled', label: 'Show a bar above the header', type: 'toggle' },
@@ -1660,6 +1664,31 @@ function panelHours(body, s) {
   body.append(el('div', { class: 'hours-grid' }, rows), el('div', { class: 'hours-actions' }, copy), summary,
     el('div', { class: 'f' }, el('label', {}, 'Time zone'), tz, el('p', { class: 'f__help' }, '“Open now” is worked out for this time zone, wherever the visitor is.')),
     el('div', { class: 'f' }, el('label', {}, 'Note (optional)'), note));
+}
+
+// Visitor stats (site feature "analytics"): Cloudflare Web Analytics or GoatCounter.
+function panelStats(body, s) {
+  body.append(el('p', { class: 'p-sub' }, 'Visitor stats'));
+  const a = s.analytics || {};
+  renderFields(body, [
+    { key: 'analytics.provider', label: 'Count visitors with', type: 'select', options: [['', 'Nothing (off)'], ['cloudflare', 'Cloudflare Web Analytics'], ['goatcounter', 'GoatCounter']],
+      help: 'Both are free, use no cookies and need no cookie banner.' },
+  ], s, () => {}, '', renderPanel);
+  if (!a.provider) return;
+  const cf = a.provider === 'cloudflare';
+  const msg = el('p', { class: 'f__help stats-state' });
+  const paint = () => {
+    const ok = theme.analyticsFor?.(s);
+    const typed = String(s.analytics?.id || '').trim();
+    msg.className = `f__help stats-state${ok || !typed ? '' : ' f__help--warn'}`;
+    msg.replaceChildren(ok ? 'Stats start counting once you publish. ' : typed ? 'That doesn’t look right yet.' : '',
+      ok ? el('a', { href: cf ? 'https://dash.cloudflare.com/?to=/:account/web-analytics' : `https://${ok.id}.goatcounter.com`, target: '_blank', rel: 'noopener' }, 'View your stats') : '');
+  };
+  renderFields(body, [{ key: 'analytics.id', label: cf ? 'Site token' : 'Site code', type: 'text', placeholder: cf ? '32 letters and numbers' : 'e.g. roetech',
+    help: cf ? 'In Cloudflare open Web Analytics → Add a site, enter your address, choose the JavaScript snippet and copy the token (the value after "token").'
+      : 'Sign up free at goatcounter.com. Your code is the first part of your stats address, e.g. roetech for roetech.goatcounter.com.' }], s, paint, '', renderPanel);
+  paint();
+  body.append(msg);
 }
 
 // Editor login. The editor can sit behind Cloudflare Access (sign in with
