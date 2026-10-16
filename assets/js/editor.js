@@ -461,6 +461,7 @@ function onCanvasFocusOut(e) {
 }
 
 function onCanvasKey(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { onGlobalKey(e); return; }
   const n = e.target.closest?.('[data-edit]');
   if (n) {
     if (e.key === 'Escape' || (e.key === 'Enter' && !n.hasAttribute('data-ml'))) { e.preventDefault(); n.blur(); }
@@ -767,7 +768,7 @@ function renderInspector() {
         el('div', {}, 'Undo / Redo', el('span', {}, el('kbd', {}, 'Ctrl Z'), ' ', el('kbd', {}, 'Ctrl ⇧ Z'))),
         el('div', {}, 'Delete section', el('kbd', {}, 'Del')),
         el('div', {}, 'Deselect', el('kbd', {}, 'Esc')),
-        el('div', {}, 'Save draft', el('kbd', {}, 'Ctrl S')))));
+        el('div', {}, 'Save draft', el('kbd', {}, 'Ctrl S')), el('div', {}, 'Jump to a page, section, post or setting', el('kbd', {}, 'Ctrl K')))));
     return;
   }
   if (isChrome(state.sel)) {
@@ -978,7 +979,7 @@ function fieldControl(f, path, val, change, target, onRender) {
       return wrap;
     }
     case 'date': {
-      const input = el('input', { class: 'in', type: 'date', value: val || '', onchange: (e) => change(path, e.target.value) });
+      const input = el('input', { class: 'in', type: 'date', value: val || '', 'data-path': path, onchange: (e) => change(path, e.target.value) });
       put(wrap, label, input, help);
       return wrap;
     }
@@ -1041,7 +1042,7 @@ function fieldControl(f, path, val, change, target, onRender) {
       return wrap;
     }
     case 'textarea': {
-      const ta = el('textarea', { rows: 3, 'data-path': path, oninput: (e) => change(path, e.target.value, { soon: true }) });
+      const ta = el('textarea', { rows: 3, 'data-path': path, placeholder: f.placeholder || null, oninput: (e) => change(path, e.target.value, { soon: true }) });
       ta.value = val ?? '';
       put(wrap, label, ta, help || el('p', { class: 'f__help' }, 'Tip: **bold**, *italic*, [link text](https://…)'));
       return wrap;
@@ -1069,7 +1070,7 @@ function fieldControl(f, path, val, change, target, onRender) {
       return wrap;
     }
     case 'toggle': {
-      const lab = el('label', { class: 'switch' }, f.label, el('input', { type: 'checkbox', checked: !!val, onchange: (e) => change(path, e.target.checked, { structural: true }) }));
+      const lab = el('label', { class: 'switch' }, f.label, el('input', { type: 'checkbox', 'data-path': path, checked: !!(val ?? f.default), onchange: (e) => change(path, e.target.checked, { structural: true }) }));
       put(wrap, lab, help);
       return wrap;
     }
@@ -1728,13 +1729,7 @@ function panelSite(box) {
     else if (s.callButton?.enabled && s.callButton.show !== 'all') body.append(el('p', { class: 'f__help' }, 'Switch the preview size at the top to Mobile to see it.'));
   }
   if (has('analytics')) panelStats(body, s);
-  body.append(el('p', { class: 'p-sub' }, 'Announcement bar'));
-  renderFields(body, [
-    { key: 'announcement.enabled', label: 'Show a bar above the header', type: 'toggle' },
-    { key: 'announcement.text', label: 'Message', type: 'text', when: (d) => d.announcement?.enabled },
-    { key: 'announcement.linkText', label: 'Link text (optional)', type: 'text', when: (d) => d.announcement?.enabled },
-    { key: 'announcement.link', label: 'Link', type: 'link', when: (d) => d.announcement?.enabled },
-  ], s, () => renderCanvas(), '', renderPanel);
+  panelAnnouncement(body, s);
   body.append(el('p', { class: 'p-sub' }, 'Social links'), el('p', { class: 'p-hint' }, 'Shown as icons in the footer. Leave empty to hide.'));
   renderFields(body, SOCIAL.map(([k, l]) => ({ key: `social.${k}`, label: l, type: 'text' })), s, () => renderCanvas(), '', renderPanel);
   if (has('verification')) panelSearchEngines(body, s);
@@ -1744,6 +1739,7 @@ function panelSite(box) {
     { key: 'shareImage', label: 'Share image', type: 'image', help: 'Shown when your site is shared on social media or messages. 1200×630 works best.' },
   ], s, () => {}, '', renderPanel);
   if (has('redirects')) panelRedirects(body);
+  if (has('not-found')) panelNotFound(body, s);
   panelEditorLogin(body);
   body.append(el('p', { class: 'p-sub' }, 'Header & footer'),
     el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: () => select('__header', { scroll: true }) }, ico('layout'), 'Edit header & footer'));
@@ -1753,6 +1749,56 @@ function panelSite(box) {
       el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: importJSON }, ico('upload'), 'Restore from file'),
       el('button', { type: 'button', class: 'ed-btn ed-btn--block ed-btn--danger', onclick: resetToPublished }, ico('refresh'), 'Discard draft (load live version)')));
   box.append(body);
+}
+
+// The bar above the header, optionally only between two dates (site feature
+// "announcement-dates"), e.g. for holiday hours or a sale.
+function panelAnnouncement(body, s) {
+  body.append(el('p', { class: 'p-sub' }, 'Announcement bar'));
+  const on = (d) => !!d.announcement?.enabled;
+  const when = el('p', { class: 'f__help ann-when' });
+  const paintWhen = () => {
+    const ann = s.announcement || {};
+    when.hidden = !has('announcement-dates') || !ann.enabled || !(ann.start || ann.end);
+    if (when.hidden) return;
+    const { start, end, state: st } = theme.announceWindow(ann, localToday());
+    const never = start && end && end < start;
+    when.classList.toggle('f__help--warn', !!never || st === 'after');
+    when.textContent = never ? 'The last day is before the first day, so the bar never shows.'
+      : st === 'before' ? `Visitors see it from ${formatDate(start)}${end ? ` through ${formatDate(end)}` : ''}.`
+        : st === 'after' ? `It ended on ${formatDate(end)}, so visitors don’t see it. Pick new days or turn it off.`
+          : end ? `Showing now, through ${formatDate(end)}.` : 'Showing now.';
+  };
+  renderFields(body, [
+    { key: 'announcement.enabled', label: 'Show a bar above the header', type: 'toggle' },
+    { key: 'announcement.text', label: 'Message', type: 'text', when: on },
+    { key: 'announcement.linkText', label: 'Link text (optional)', type: 'text', when: on },
+    { key: 'announcement.link', label: 'Link', type: 'link', when: on },
+    ...(has('announcement-dates') ? [
+      { key: 'announcement.start', label: 'First day (optional)', type: 'date', when: on },
+      { key: 'announcement.end', label: 'Last day (optional)', type: 'date', when: on,
+        help: 'Show it only on these days, e.g. for holiday hours or a sale. Leave empty to show it until you turn it off.' },
+    ] : []),
+  ], s, () => { renderCanvas(); paintWhen(); }, '', renderPanel);
+  paintWhen();
+  body.append(when);
+}
+
+// The page visitors see for an address that doesn't exist (site feature "not-found").
+function panelNotFound(body, s) {
+  const nf = theme.NOT_FOUND || {};
+  body.append(el('p', { class: 'p-sub' }, 'Page not found'),
+    el('p', { class: 'p-hint' }, 'Shown when someone opens an address that doesn’t exist on your site, like an old or mistyped link. Empty boxes use the standard wording.'));
+  renderFields(body, [
+    { key: 'notFound.heading', label: 'Heading', type: 'text', placeholder: nf.heading },
+    { key: 'notFound.text', label: 'Message', type: 'textarea', placeholder: nf.text },
+    { key: 'notFound.button', label: 'Button text', type: 'text', placeholder: nf.button },
+    { key: 'notFound.links', label: 'List your pages below the button', type: 'toggle', default: true },
+  ], s, () => {}, '', renderPanel);
+  body.append(el('button', { type: 'button', class: 'ed-btn ed-btn--block', onclick: async () => {
+    flushCommit(); await saveDraft();
+    window.open(`preview.html?path=${encodeURIComponent('/this-page-does-not-exist/')}`, '_blank', 'noopener');
+  } }, ico('eye'), 'Preview the page'));
 }
 
 const LANGUAGES = [['en', 'English'], ['en-US', 'English (United States)'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['it', 'Italian'], ['zh', 'Chinese'], ['vi', 'Vietnamese'], ['ko', 'Korean'], ['ar', 'Arabic']];
@@ -1936,7 +1982,7 @@ function panelHelp(box) {
       el('div', {}, 'Undo', el('kbd', {}, 'Ctrl Z')), el('div', {}, 'Redo', el('kbd', {}, 'Ctrl ⇧ Z')),
       el('div', {}, 'Delete selected section', el('kbd', {}, 'Del')), el('div', {}, 'Finish editing text', el('kbd', {}, 'Esc')),
       el('div', {}, 'Duplicate section', el('kbd', {}, 'Ctrl D')), el('div', {}, 'Copy / paste section', el('span', {}, el('kbd', {}, 'Ctrl C'), ' ', el('kbd', {}, 'Ctrl V'))),
-      el('div', {}, 'Save draft', el('kbd', {}, 'Ctrl S')))));
+      el('div', {}, 'Save draft', el('kbd', {}, 'Ctrl S')), el('div', {}, 'Jump to a page, section, post or setting', el('kbd', {}, 'Ctrl K')))));
 }
 
 // ---------------------------------------------------------------------------
@@ -2540,6 +2586,148 @@ function focusField(root, field) {
 }
 
 // ---------------------------------------------------------------------------
+// Jump to anything (Ctrl+K): pages, sections, posts, panels, settings and
+// common actions, found by typing a few letters.
+const PANELS = [['add', 'Add a section', 'plus'], ['layers', 'Layers', 'layers'], ['pages', 'Pages', 'file'], ['blog', 'Blog', 'pen'],
+  ['media', 'Images', 'image'], ['theme', 'Design', 'droplet'], ['site', 'Settings', 'sliders'], ['history', 'History', 'history'],
+  ['checkup', 'Checkup', 'check-circle'], ['help', 'Help', 'help']];
+// [label, extra search words, panel, subheading in that panel, needed site feature]
+const SETTING_JUMPS = [
+  ['Business details', 'name email phone address location contact form endpoint formspree', 'site', 'Business'],
+  ['Business hours', 'open closed times schedule opening', 'site', 'Business hours', 'hours'],
+  ['Call button', 'phone text sms call now mobile', 'site', 'Call button', 'call-button'],
+  ['Review page', 'google reviews link', 'site', 'Business', 'reviews'],
+  ['Visitor stats', 'analytics cloudflare goatcounter traffic', 'site', 'Visitor stats', 'analytics'],
+  ['Announcement bar', 'banner notice message top holiday sale dates', 'site', 'Announcement bar'],
+  ['Social links', 'facebook instagram linkedin youtube x twitter', 'site', 'Social links'],
+  ['Search engines', 'google bing verification seo', 'site', 'Search engines', 'verification'],
+  ['Share image and tab icon', 'favicon branding social preview', 'site', 'Branding & sharing'],
+  ['Redirects', 'old address moved page forward', 'site', 'Redirects', 'redirects'],
+  ['Page not found', '404 error missing', 'site', 'Page not found', 'not-found'],
+  ['Editor login', 'sign in cloudflare access google email security', 'site', 'Editor login'],
+  ['Backup and restore', 'download json restore discard draft', 'site', 'Backup'],
+  ['Color themes', 'design palette preset look', 'theme', 'Color themes'],
+  ['Colors', 'design brand primary accent background', 'theme', 'Colors'],
+  ['Fonts', 'typography headings body text', 'theme', 'Typography'],
+];
+
+const strip = (v) => String(v || '').replace(/[*_`#[\]]/g, '').replace(/\(([^)]*)\)/g, '').trim();
+
+function paletteItems() {
+  const items = [];
+  const add = (group, label, iconName, run, { hint = '', words = '' } = {}) =>
+    items.push({ group, label, icon: iconName, run, hint, text: `${label} ${hint} ${words}`.toLowerCase() });
+  const actions = [
+    ['Publish', 'send', () => $('#publish').click(), 'make it live'],
+    ['Preview in a new tab', 'eye', () => $('#preview').click(), 'view draft'],
+    ['New page', 'plus', openAddPage, 'add page template'],
+    ['New blog post', 'pen', () => newPost('post'), 'write article'],
+    ['New blurb', 'sparkle', () => newPost('blurb'), 'short note link'],
+    ['Edit header & footer', 'layout', () => select('__header', { scroll: true }), 'menu logo navigation'],
+    ['Find & replace', 'search', openFindReplace, 'change words everywhere'],
+    ['Undo', 'undo', undo, ''],
+    ['Redo', 'redo', redo, ''],
+    ['Phone-size preview', 'smartphone', () => setDevice('mobile'), 'mobile device'],
+    ['Computer-size preview', 'monitor', () => setDevice('desktop'), 'desktop device'],
+    ['Download a backup', 'download', downloadJSON, 'save json'],
+    ['Open the live site', 'external', () => window.open(`${SITE}/`, '_blank', 'noopener'), 'view website'],
+  ];
+  for (const [label, iconName, run, words] of actions) add('Actions', label, iconName, run, { words });
+  state.doc.pages.forEach((p, i) => add('Pages', p.title || 'Untitled page', 'file', () => goToPage(i),
+    { hint: i === 0 ? 'Home page' : `${pageHref(p, i)}${p.draft ? ' · not on the website yet' : ''}` }));
+  for (const [tab, label, iconName] of PANELS) if (tab !== 'checkup' || has('audit')) add('Panels', label, iconName, () => setTab(tab), { hint: 'Panel' });
+  for (const [label, words, tab, heading, feature] of SETTING_JUMPS) {
+    if (!feature || has(feature)) add('Settings', label, tab === 'theme' ? 'droplet' : 'sliders', () => openSetting(tab, heading), { hint: tab === 'theme' ? 'Design' : 'Settings', words });
+  }
+  state.doc.pages.forEach((p, i) => p.sections.forEach((sec) => {
+    const b = BLOCKS[sec.type];
+    if (!b) return;
+    add('Sections', strip(sec.label || sectionSummary(sec)) || b.label, b.icon || 'layout', () => goToSection(i, sec.id),
+      { hint: `${b.label} on ${p.title}`, words: strip(sec.data?.eyebrow) });
+  }));
+  (state.doc.posts || []).forEach((p) => add('Blog', postTitle(p) || 'Untitled', p.kind === 'blurb' ? 'sparkle' : 'pen', () => openPost(p.id),
+    { hint: `${p.kind === 'blurb' ? 'Blurb' : 'Post'}${p.date ? ` · ${formatDate(p.date)}` : ''}${p.published === false ? ' · draft' : ''}`, words: p.tags || '' }));
+  return items;
+}
+
+// Best matches first: the name starts with the words, then a word in the name
+// does, then the words appear anywhere (name, details or extra search words).
+// Results stay together by kind, the kind with the best match first.
+function paletteMatches(items, query, limit = 60) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return items.filter((it) => ['Actions', 'Pages', 'Panels'].includes(it.group));
+  const q = words.join(' ');
+  const hits = items.map((it, n) => {
+    if (!words.every((w) => it.text.includes(w))) return null;
+    const name = it.label.toLowerCase();
+    const score = name.startsWith(q) ? 0 : name.split(/[\s\-–—&/]+/).some((w) => w.startsWith(words[0])) ? 1 : name.includes(q) ? 2 : 3;
+    return { it, n, score };
+  }).filter(Boolean).sort((a, b) => a.score - b.score || a.n - b.n).slice(0, limit);
+  const rank = new Map();
+  hits.forEach((h, i) => { if (!rank.has(h.it.group)) rank.set(h.it.group, i); });
+  return hits.sort((a, b) => rank.get(a.it.group) - rank.get(b.it.group)).map((h) => h.it);
+}
+
+function goToSection(i, id) {
+  if (i !== state.page || state.post) goToPage(i);
+  select(id, { scroll: true });
+  setTimeout(() => scrollToSection(id, true), 40);
+}
+
+function openSetting(tab, heading) {
+  setTab(tab);
+  setTimeout(() => {
+    const h = $$('#panel .p-sub').find((n) => n.textContent === heading);
+    if (!h) return;
+    h.scrollIntoView({ block: 'start' });
+    h.classList.add('ed-flash-field');
+    setTimeout(() => h.classList.remove('ed-flash-field'), 1600);
+  }, 40);
+}
+
+function openPalette() {
+  flushCommit();
+  const items = paletteItems();
+  let shown = [];
+  let active = 0;
+  const input = el('input', { class: 'in palette__in', type: 'search', placeholder: 'Search pages, sections, posts, settings…', autocomplete: 'off', 'aria-label': 'Jump to', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'palette-list' });
+  const list = el('div', { class: 'palette__list', id: 'palette-list', role: 'listbox' });
+  const run = (it) => { closeModal(); it.run(); };
+  const mark = () => {
+    list.querySelectorAll('.palette__item').forEach((b, n) => { b.classList.toggle('is-active', n === active); b.setAttribute('aria-selected', String(n === active)); });
+    list.querySelector('.palette__item.is-active')?.scrollIntoView({ block: 'nearest' });
+  };
+  const paint = () => {
+    shown = paletteMatches(items, input.value);
+    active = 0;
+    let group = '';
+    const rows = [];
+    shown.forEach((it, n) => {
+      if (it.group !== group) { group = it.group; rows.push(el('p', { class: 'palette__group' }, group)); }
+      rows.push(el('button', { type: 'button', class: 'palette__item', role: 'option', onclick: () => run(it), onmousemove: () => { if (active !== n) { active = n; mark(); } } },
+        ico(it.icon), el('span', { class: 'palette__txt' }, el('strong', {}, it.label), it.hint ? el('small', {}, it.hint) : null)));
+    });
+    list.replaceChildren(...(rows.length ? rows : [el('p', { class: 'palette__none' }, `Nothing found for “${input.value.trim()}”.`)]));
+    hydrateIcons(list);
+    mark();
+  };
+  input.addEventListener('input', paint);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (shown.length) { active = (active + (e.key === 'ArrowDown' ? 1 : -1) + shown.length) % shown.length; mark(); }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (shown[active]) run(shown[active]);
+    } else if (e.key === 'Escape') { e.preventDefault(); closeModal(); }
+  });
+  openModal('Jump to', el('div', { class: 'palette' }, el('div', { class: 'palette__search' }, ico('search'), input), list,
+    el('p', { class: 'palette__foot' }, el('kbd', {}, '↑'), el('kbd', {}, '↓'), ' to move · ', el('kbd', {}, 'Enter'), ' to open · ', el('kbd', {}, 'Esc'), ' to close')));
+  paint();
+  setTimeout(() => input.focus(), 30);
+}
+
+// ---------------------------------------------------------------------------
 // Find & replace across all pages and site settings
 const NON_TEXT = new Set(['id', 'type', 'icon', 'image', 'bgImage', 'logo', 'logoIcon', 'panelIcon', 'favicon', 'shareImage', 'href', 'link', 'src', 'bg', 'pad',
   'layout', 'side', 'columns', 'style', 'ratio', 'width', 'height', 'align', 'overlay', 'anchor', 'headerStyle', 'formEndpoint', 'slug', 'url', 'kind', 'date', 'show', 'limit', 'size']);
@@ -2638,6 +2826,7 @@ function onGlobalKey(e) {
   const mod = e.metaKey || e.ctrlKey;
   const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); flushCommit(); saveDraft(); toast('Draft saved'); return; }
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); e.target.blur?.(); openPalette(); return; }
   if (inField) return;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
@@ -2725,6 +2914,8 @@ async function boot() {
   $('#preview').addEventListener('click', async () => { flushCommit(); await saveDraft(); const post = state.post && findPost(state.post);
     window.open(`preview.html?path=${encodeURIComponent(post ? `/${POSTS_BASE}/${post.slug}/` : pageHref(page(), state.page))}`, '_blank', 'noopener'); });
   $('#find').addEventListener('click', openFindReplace);
+  $('#jump')?.addEventListener('click', openPalette);
+  if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) $$('#jump kbd').forEach((k) => { k.textContent = '⌘K'; });
   document.addEventListener('keydown', onGlobalKey);
   addEventListener('beforeunload', () => flushCommit());
 }

@@ -877,6 +877,94 @@ test('visitor stats and the review page in Settings', async (t) => {
   await ctx.close();
 });
 
+test('jump to anything with Ctrl+K', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+
+  // A page, by typing part of its name, then Enter
+  await p.keyboard.press('Control+k');
+  const box = p.locator('.palette__in');
+  await box.waitFor();
+  assert.ok(await p.locator('.palette__item').count() > 5, 'actions, pages and panels before typing');
+  await box.fill('abou');
+  assert.equal(await p.locator('.palette__item.is-active strong').innerText(), 'About');
+  await p.keyboard.press('Enter');
+  assert.equal(await p.locator('#page-select').inputValue(), String((await p.locator('#page-select option').allInnerTexts()).findIndex((t) => /About/.test(t))));
+  assert.ok(await p.locator('#modal').isHidden());
+
+  // A setting, from inside text on the canvas
+  await canvas.locator('.hero__title').first().click();
+  await p.keyboard.press('Control+k');
+  await box.fill('announcement');
+  await p.locator('.palette__item', { hasText: 'Announcement bar' }).click();
+  assert.equal(await p.locator('.ed-rail button.is-on').getAttribute('data-tab'), 'site');
+  await p.locator('#panel .p-sub', { hasText: 'Announcement bar' }).waitFor();
+
+  // Arrow keys move through results; nothing found says so
+  await p.click('#jump');
+  await box.fill('zzzz qqqq');
+  await p.locator('.palette__none', { hasText: 'Nothing found' }).waitFor();
+  await box.fill('new');
+  const first = await p.locator('.palette__item.is-active strong').innerText();
+  await p.keyboard.press('ArrowDown');
+  assert.notEqual(await p.locator('.palette__item.is-active strong').innerText(), first);
+  await p.keyboard.press('Escape');
+  assert.ok(await p.locator('#modal').isHidden());
+
+  // A blog post
+  await p.keyboard.press('Control+k');
+  await box.fill('multi-factor');
+  await p.locator('.palette__item', { hasText: /Post ·/ }).first().click();
+  await p.locator('#panel [data-path="slug"]').waitFor();
+  assert.match(await p.locator('#panel [data-path="slug"]').inputValue(), /multi-factor/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('announcement dates and the page-not-found wording in Settings', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('not-found')) { t.skip('the site does not support these yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const { read } = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (d) => d.accept());
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="site"]');
+  await p.locator('#panel .f', { hasText: 'Show a bar above the header' }).locator('input').check();
+  await p.fill('#panel [data-path="announcement.text"]', 'Closed for the holidays');
+  await p.fill('#panel [data-path="announcement.start"]', '2999-12-24');
+  await p.fill('#panel [data-path="announcement.end"]', '2999-12-26');
+  await p.locator('#panel .ann-when', { hasText: 'Visitors see it from Dec 24, 2999 through Dec 26, 2999.' }).waitFor();
+  await canvas.locator('.announce.is-off .announce__note', { hasText: 'Starts Dec 24, 2999' }).waitFor();
+  await p.fill('#panel [data-path="announcement.end"]', '2999-12-01');
+  await p.locator('#panel .ann-when.f__help--warn', { hasText: 'never shows' }).waitFor();
+  await p.fill('#panel [data-path="announcement.end"]', '2999-12-26');
+
+  // Page not found: empty boxes show the standard wording as a hint
+  assert.equal(await p.getAttribute('#panel [data-path="notFound.heading"]', 'placeholder'), theme.NOT_FOUND.heading);
+  assert.ok(await p.locator('#panel [data-path="notFound.links"]').isChecked(), 'page links are on by default');
+  await p.fill('#panel [data-path="notFound.heading"]', 'Oops, that page moved');
+  await p.locator('#panel [data-path="notFound.links"]').uncheck();
+  const [preview] = await Promise.all([ctx.waitForEvent('page'), p.click('#panel button:has-text("Preview the page")')]);
+  await preview.locator('h1', { hasText: 'Oops, that page moved' }).waitFor();
+  assert.equal(await preview.locator('.notfound__links').count(), 0);
+  await preview.close();
+
+  await publish(p);
+  const nf = read('404.html');
+  assert.match(nf, /<h1 class="sec-title">Oops, that page moved<\/h1>/);
+  assert.doesNotMatch(nf, /notfound__links/);
+  assert.match(read('index.html'), /<div class="announce" data-start="2999-12-24" data-end="2999-12-26" hidden>/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
 test('behind a login, the editor shows who is signed in', async () => {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   await ctx.route('**/cdn-cgi/access/get-identity', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ email: 'owner@example.com', name: 'Owner' }) }));
