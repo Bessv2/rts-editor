@@ -751,7 +751,7 @@ function renderInspector() {
       el('p', { class: 'p-hint' }, 'The preview updates as you type. Use the toolbar above the text box, or type these yourself:'),
       el('div', { class: 'md-cheats' }, [
         ['**bold**', 'bold'], ['*italic*', 'italic'], ['[text](https://…)', 'link'], ['## Heading', 'section heading'],
-        ['- item', 'bullet list'], ['1. item', 'numbered list'], ['> quote', 'quote'], ['![caption](image)', 'image'], ['---', 'divider line'],
+        ['- item', 'bullet list'], ['1. item', 'numbered list'], ...(has('task-lists') ? [['- [ ] item', 'checklist with tick boxes']] : []), ['> quote', 'quote'], ['![caption](image)', 'image'], ['---', 'divider line'],
         ...(has('code') ? [['`code`', 'code'], ['```', 'code block (on its own line before and after)']] : []),
         ...(has('callouts') ? [['> [!TIP]', 'tip box (also [!NOTE], [!WARNING])']] : []),
       ].map(([code, what]) => el('div', {}, el('code', {}, code), el('span', {}, what)))),
@@ -1027,6 +1027,7 @@ function fieldControl(f, path, val, change, target, onRender) {
         [ico('link'), 'Link', () => openLinkPicker((url) => wrapSel('[', `](${url.replace(/\s/g, '%20').replace(/\)/g, '%29')})`, 'link text'), { from: pageOfTarget(target) })],
         [el('b', {}, 'H'), 'Heading', () => prefix('## ')],
         [ico('list'), 'Bullet list', () => prefix('- ')],
+        ...(has('task-lists') ? [[ico('check'), 'Checklist (tick boxes)', () => prefix('- [ ] ')]] : []),
         [ico('quote'), 'Quote', () => prefix('> ')],
         ...(has('code') ? [
           [ico('code'), 'Code (inline)', () => wrapSel('`', '`', 'code')],
@@ -2289,6 +2290,8 @@ function panelPostEditor(box, p) {
       { key: 'image', label: 'Cover image', type: 'image' },
       { key: 'summary', label: 'Summary', type: 'textarea', help: 'One or two sentences shown on the blog card and in search results.' },
       { key: 'body', label: 'Article', type: 'markdown', rows: 18 },
+      ...(has('post-toc') ? [{ key: 'toc', label: 'Start with an “In this post” list', type: 'toggle', default: true,
+        help: 'Links to each ## heading. Shown when the article has three or more.' }] : []),
       { key: 'link', label: 'Source link (optional)', type: 'text', help: 'Credit an article you are writing about.' },
     ]),
   ], p, preview, '', renderPanel);

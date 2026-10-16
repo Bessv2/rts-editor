@@ -122,7 +122,11 @@ export function htmlToMarkdown(html) {
         if (li.tagName !== 'LI') continue;
         const nested = [...li.children].filter((c) => c.tagName === 'UL' || c.tagName === 'OL');
         const text = [...li.childNodes].filter((c) => !nested.includes(c)).map((c) => inline(c)).join('').replace(/\s+/g, ' ').trim();
-        if (text) items.push(`${tag === 'OL' ? `${n++}.` : '-'} ${text}`);
+        // Checklists: a tick box in the item (web pages) or role="checkbox" (Google Docs).
+        const box = li.querySelector(':scope > input[type=checkbox], :scope > label > input[type=checkbox], :scope > p > input[type=checkbox]');
+        const ticked = li.getAttribute('role') === 'checkbox' ? li.getAttribute('aria-checked') === 'true' : box ? box.hasAttribute('checked') : null;
+        const mark = tag === 'UL' && ticked !== null ? (ticked ? '[x] ' : '[ ] ') : '';
+        if (text) items.push(`${tag === 'OL' ? `${n++}.` : '-'} ${mark}${text}`);
         for (const sub of nested) items.push(...htmlToMarkdown(sub.outerHTML).split('\n').filter(Boolean));
       }
       if (items.length) blocks.push(items.join('\n'));
