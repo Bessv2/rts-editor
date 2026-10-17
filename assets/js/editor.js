@@ -3,6 +3,8 @@ import { publishToGitHub, checkAccess, listPublishedVersions, readPublishedVersi
 import { kv, versions } from './store.js';
 import { CONFIG, SITE, loadTheme, showFatal, siteAsset as toSiteAsset } from './config.js';
 import { htmlToMarkdown, hasFormatting, stripHandlers } from './html-to-md.js';
+import * as ops from './layout-ops.js';
+import { createRichToolbar } from './richtext.js';
 
 // Refuse to run inside another site's frame (clickjacking protection;
 // GitHub Pages can't send X-Frame-Options headers).
@@ -46,6 +48,9 @@ const state = {
   history: [], future: [], snap: '', published: '',
   open: new Set(), commitTimer: 0, ghToken: '', clipboard: null, post: null,
   el: null, // index of the selected element inside the selected section
+  node: null, // path of the selected row, column or element in a layout section
+  insTab: 'content', // the section panel's tab: content or style
+  openStyle: new Set(), // style groups left open in the Style tab
   access: null, // { email, name } when the editor is behind a login (Cloudflare Access)
   base: '', // content/site.json version (git sha) this draft started from
   blogShow: 'all', blogQuery: '', // Blog tab filter
@@ -166,7 +171,19 @@ function initCanvas() {
       d.addEventListener('dragover', onCanvasDragOver);
       d.addEventListener('drop', onCanvasDrop);
       d.addEventListener('dragend', endCanvasDrag);
+      d.addEventListener('pointerdown', (e) => { const h = e.target.closest?.('[data-col-handle]'); if (h) startColResize(e, h); });
+      d.addEventListener('mouseover', onCanvasHover);
       d.body.dataset.device = state.device;
+      if (has('rich-text')) {
+        try { d.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* older browsers */ }
+        rt = createRichToolbar({
+          doc: d, icon,
+          colors: [['Brand', 'var(--c-primary)'], ['Accent', 'var(--c-accent)'], ['Dark', 'var(--c-dark)'], ['Text', 'var(--c-text)'], ['White', '#ffffff'],
+            ['Grey', '#6b7280'], ['Red', '#dc2626'], ['Orange', '#ea580c'], ['Green', '#16a34a'], ['Blue', '#2563eb']].map(([n, v]) => [n, v, v]),
+          onLink: (current, done) => openLinkPicker(done, { from: state.page, current }),
+          onChange: (n) => n.dispatchEvent(new Event('input', { bubbles: true })),
+        });
+      }
       resolve();
     });
     frame.srcdoc = canvasHTML();
@@ -175,9 +192,23 @@ function initCanvas() {
 
 function makeEditable(root) {
   $$('[data-edit]', root).forEach((n) => {
-    try { n.contentEditable = 'plaintext-only'; } catch { n.contentEditable = 'true'; }
+    // Rich text (data-html) takes formatting; everything else is plain text.
+    if (n.hasAttribute('data-html')) n.contentEditable = 'true';
+    else try { n.contentEditable = 'plaintext-only'; } catch { n.contentEditable = 'true'; }
     n.spellcheck = true;
   });
+}
+
+let rt = null; // the rich text toolbar (richtext.js), when the site has rich text
+
+// The innermost row, column or element under the pointer gets a hover outline.
+let hovered = null;
+function onCanvasHover(e) {
+  const n = e.target.closest?.('.is-selected [data-node]') || null;
+  if (n === hovered) return;
+  hovered?.classList.remove('is-node-hover');
+  hovered = n;
+  n?.classList.add('is-node-hover');
 }
 
 function renderCanvas({ keepScroll = true } = {}) {
@@ -224,8 +255,9 @@ function applyTheme() {
 
 function decorateSelection() {
   const d = cdoc();
-  $$('.ed-chip, .ed-tools, .ed-el-tools', d).forEach((n) => n.remove());
-  $$('.is-selected, .is-el-selected', d).forEach((n) => n.classList.remove('is-selected', 'is-el-selected'));
+  $$('.ed-chip, .ed-tools, .ed-el-tools, .ed-node-tools, .ed-col-handle, .ed-row-add', d).forEach((n) => n.remove());
+  $$('.is-selected, .is-el-selected, .is-node-sel, .is-node-parent, .is-node-row', d).forEach((n) => n.classList.remove('is-selected', 'is-el-selected', 'is-node-sel', 'is-node-parent', 'is-node-row'));
+  if (rt?.active && !rt.active.isConnected) rt.attach(null);
   if (!state.sel) return;
   const node = d.querySelector(`[data-section-id="${CSS.escape(state.sel)}"]`);
   if (!node) return;
@@ -242,6 +274,7 @@ function decorateSelection() {
         .map(([t, ic, title, dis]) => `<button type="button" data-tool="${t}" title="${title}"${dis ? ' disabled' : ''}>${icon(ic)}</button>`).join('');
     elNode.append(et);
   }
+  if (isLayout(findSection(state.sel))) decorateLayout(node, findSection(state.sel));
   const chip = d.createElement('div');
   chip.className = 'ed-chip';
   chip.textContent = (!isChrome(state.sel) && findSection(state.sel)?.label) || node.dataset.label;
@@ -286,8 +319,9 @@ let drag = null; // { kind: 'section', id } or { kind: 'el', sec, i }
 function onCanvasDragStart(e) {
   const g = e.target.closest?.('[data-drag]');
   if (!g || !state.sel) { if (!e.target.closest?.('[data-edit]')) e.preventDefault(); return; }
-  drag = g.dataset.drag === 'el' && state.el != null ? { kind: 'el', sec: state.sel, i: state.el } : { kind: 'section', id: state.sel };
-  const node = drag.kind === 'el' ? g.closest('[data-el]') : g.closest('[data-section-id]');
+  if (g.dataset.drag === 'node' && state.node) drag = { kind: 'node', sec: state.sel, path: state.node, nk: ops.kindOf(state.node) };
+  else drag = g.dataset.drag === 'el' && state.el != null ? { kind: 'el', sec: state.sel, i: state.el } : { kind: 'section', id: state.sel };
+  const node = drag.kind === 'node' ? g.closest('[data-node]') : drag.kind === 'el' ? g.closest('[data-el]') : g.closest('[data-section-id]');
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', drag.kind);
   try { e.dataTransfer.setDragImage(node, 24, 24); } catch { /* not supported */ }
@@ -296,6 +330,7 @@ function onCanvasDragStart(e) {
 
 function dropTarget(e) {
   if (!drag) return null;
+  if (drag.kind === 'node') return nodeDropTarget(e);
   const sec = e.target.closest?.('[data-section-id]');
   if (!sec || isChrome(sec.dataset.sectionId)) return null;
   if (drag.kind === 'section') {
@@ -330,6 +365,7 @@ function onCanvasDrop(e) {
   clearDrop();
   if (!t) return;
   e.preventDefault();
+  if (drag.kind === 'node') { dropNode(t); return; }
   if (drag.kind === 'section') {
     const list = sections();
     const targetId = t.node.dataset.sectionId;
@@ -395,17 +431,39 @@ function scrollToSection(id, flash = false) {
 }
 
 function onCanvasClick(e) {
+  // The toolbar and column handles handle their own clicks (a resize ends with one).
+  if (rt?.contains(e.target) || e.target.closest('.ed-col-handle')) return;
   const tool = e.target.closest('[data-tool]');
   if (tool) {
     e.preventDefault();
     e.stopPropagation();
     if (tool.dataset.tool === 'insert') { insertAt(tool); return; }
-    if (!tool.disabled) runTool(tool.dataset.tool, state.sel);
+    if (tool.disabled) return;
+    if (tool.dataset.tool.startsWith('node-')) nodeTool(tool.dataset.tool);
+    else runTool(tool.dataset.tool, state.sel);
     return;
   }
   if (e.target.closest('a, summary, button')) e.preventDefault();
   const sec = e.target.closest('[data-section-id]');
   const id = sec?.dataset.sectionId || null;
+  // Layout sections: the innermost row, column or element clicked is selected.
+  if (isLayout(findSection(id))) {
+    const addRowBtn = e.target.closest('[data-add-row]');
+    const addEl = e.target.closest('[data-add-el]');
+    if (addRowBtn) { selectNode(id, null); openRowPicker(id); return; }
+    if (addEl) {
+      selectNode(id, addEl.dataset.addEl);
+      openLayoutPicker(id, { list: `${addEl.dataset.addEl}.els`, index: (ops.getAt(findSection(id).data, `${addEl.dataset.addEl}.els`) || []).length });
+      return;
+    }
+    const path = e.target.closest('[data-node]')?.dataset.node || null;
+    if (id !== state.sel || path !== state.node) selectNode(id, path);
+    const item = nodeOf(findSection(id), path);
+    if (path && item?.type === 'image' && e.target.closest('.figure__empty')) {
+      openMediaPicker((src) => { const n = nodeOf(findSection(id), path); if (n) { n.image = src; layoutChanged(id, path); } });
+    }
+    return;
+  }
   const elNode = id && !isChrome(id) ? e.target.closest('[data-el]') : null;
   if (elNode) {
     const i = Number(elNode.dataset.el);
@@ -431,6 +489,15 @@ function onCanvasInput(e) {
   const id = n.closest('[data-section-id]')?.dataset.sectionId;
   const target = targetFor(id);
   if (!target) return;
+  if (n.hasAttribute('data-html')) {
+    // Rich text is stored cleaned; the page shows exactly that once it is redrawn.
+    const html = theme.cleanHTML(n.innerHTML);
+    if (!html && !n.textContent.trim() && n.innerHTML !== '') n.innerHTML = '';
+    setPath(target, n.dataset.edit, html);
+    if (state.sel !== id) select(id, { quiet: true });
+    commitSoon();
+    return;
+  }
   let value = n.innerText;
   value = n.hasAttribute('data-ml') ? value.replace(/\n$/, '') : value.replace(/\s*\n\s*/g, ' ');
   if (value === '' && n.innerHTML !== '') n.innerHTML = ''; // so the placeholder reappears
@@ -452,16 +519,26 @@ function richTarget(e) {
   return n && id ? { n, raw: String(getPath(targetFor(id), n.dataset.edit) ?? '') } : null;
 }
 function onCanvasFocusIn(e) {
+  const html = e.target.closest?.('[data-html]');
+  if (rt && html) rt.attach(html);
   const r = richTarget(e);
   if (r && r.n.textContent !== r.raw) r.n.textContent = r.raw;
 }
 function onCanvasFocusOut(e) {
   flushCommit();
+  // The toolbar stays while focus moves into it (its colour picker) or to other rich text.
+  if (rt) setTimeout(() => { const a = cdoc()?.activeElement; if (!a?.closest?.('[data-html]') && !rt.contains(a)) rt.attach(null); }, 0);
   const r = richTarget(e);
   if (r) r.n.innerHTML = r.n.hasAttribute('data-md') && theme.markdown ? theme.markdown(r.raw, safeSrc) : rich(r.raw);
 }
 
 function onCanvasKey(e) {
+  const rich = e.target.closest?.('[data-html]');
+  if (rich) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); rt?.link(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); rich.blur(); }
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { onGlobalKey(e); return; }
   const n = e.target.closest?.('[data-edit]');
   if (n) {
@@ -476,6 +553,13 @@ function onCanvasPaste(e) {
   const n = e.target.closest?.('[data-edit]');
   if (!n || n.contentEditable === 'plaintext-only') return;
   e.preventDefault();
+  if (n.hasAttribute('data-html')) {
+    const html = e.clipboardData.getData('text/html');
+    const text = e.clipboardData.getData('text/plain');
+    const clean = html ? cleanPastedHTML(html) : text.split(/\n{2,}/).map((para) => `<p>${esc(para).replace(/\n/g, '<br>')}</p>`).join('');
+    if (clean) cdoc().execCommand('insertHTML', false, clean);
+    return;
+  }
   cdoc().execCommand('insertText', false, e.clipboardData.getData('text/plain'));
 }
 
@@ -483,7 +567,7 @@ function onCanvasPaste(e) {
 // Selection + section operations
 function select(id, { quiet = false, scroll = false } = {}) {
   flushCommit();
-  if (id !== state.sel) state.el = null;
+  if (id !== state.sel) { state.el = null; state.node = null; }
   state.sel = id;
   decorateSelection();
   renderInspector();
@@ -506,6 +590,7 @@ function insertSection(section, message, at = null) {
   const sec = clone(section);
   sec.id = uid();
   state.el = null;
+  state.node = null;
   sections().splice(at ?? (state.sel === '__header' ? 0 : insertIndex()), 0, sec);
   commit();
   state.sel = sec.id;
@@ -578,6 +663,7 @@ function runTool(tool, id) {
     const label = BLOCKS[list[i].type]?.label || 'Section';
     list.splice(i, 1);
     state.sel = null;
+    state.node = null;
     commit(); renderCanvas(); renderPanel(); renderInspector();
     toast(`${label} deleted`, { action: 'Undo', onAction: undo });
   }
@@ -732,6 +818,512 @@ function elementsGroup(sec) {
 }
 
 // ---------------------------------------------------------------------------
+// Layout sections (site feature "layout-builder"): rows of columns holding
+// elements, each with its own style settings. A piece of a layout is selected
+// by its path in the section data (state.node), as the site writes it in
+// data-node: rows.0, rows.0.cols.1, rows.0.cols.1.els.2.
+const LAYOUT = (has('layout-builder') && theme.LAYOUT_ELEMENTS) || null;
+const STYLE_GROUPS = (has('section-styles') && theme.STYLE_GROUPS) || null;
+const ROW_PRESETS = theme.ROW_PRESETS || [[12], [6, 6], [4, 4, 4], [3, 3, 3, 3], [4, 8], [8, 4]];
+const LAYOUT_HINTS = {
+  heading: 'A title', text: 'Paragraphs, lists, links, colours', image: 'A photo or picture', button: 'A link that stands out', icon: 'An icon on its own',
+  box: 'A card that holds elements', feature: 'Icon, title and text', checklist: 'Points with ticks', quote: 'A quote that stands out', video: 'YouTube or Vimeo',
+  review: 'Ask for a Google review', hours: 'Your opening hours', divider: 'A thin line', spacer: 'Empty space',
+};
+const FRACTIONS = { 2: '⅙', 3: '¼', 4: '⅓', 6: '½', 8: '⅔', 9: '¾', 12: 'full' };
+const isLayout = (sec) => !!LAYOUT && sec?.type === 'layout';
+const nodeOf = (sec, path) => (sec && path ? ops.getAt(sec.data, path) : null);
+const nodeSel = (secId, path) => `[data-section-id="${CSS.escape(secId)}"] [data-node="${path}"]`;
+const spanText = (s) => (FRACTIONS[s] ? `${s}/12 · ${FRACTIONS[s]}` : `${s}/12`);
+const presetName = (spans) => (spans.length === 1 ? 'One column' : spans.every((s) => s === spans[0]) ? `${spans.length} equal` : spans.map((s) => FRACTIONS[s] || `${s}/12`).join(' + '));
+const presetBars = (spans) => el('span', { class: 'row-pv' }, spans.map((s) => el('i', { style: `flex:${s}` })));
+
+function nodeLabel(sec, path) {
+  const kind = ops.kindOf(path);
+  if (kind === 'el') return LAYOUT[nodeOf(sec, path)?.type]?.label || 'Element';
+  return `${kind === 'row' ? 'Row' : 'Column'} ${ops.locate(path).index + 1}`;
+}
+
+// The selection inside a layout section, or null when it no longer exists (after undo).
+function currentNode(sec = findSection(state.sel)) {
+  if (!state.node) return null;
+  if (!isLayout(sec) || !ops.exists(sec.data, state.node)) state.node = null;
+  return state.node;
+}
+
+function selectNode(secId, path, { scroll = false } = {}) {
+  flushCommit();
+  if (state.sel !== secId) { state.sel = secId; state.el = null; }
+  state.node = path || null;
+  decorateSelection();
+  renderInspector();
+  if (state.tab === 'layers') renderPanel();
+  if (scroll && path) setTimeout(() => cdoc()?.querySelector(nodeSel(secId, path))?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 20);
+}
+
+// After a change to a layout: save, redraw the section and select `next`.
+function layoutChanged(secId, next = state.node, { soon = false } = {}) {
+  state.node = next || null;
+  if (soon) commitSoon(); else commit();
+  refreshSection(secId);
+  renderInspector();
+  if (state.tab === 'layers') renderPanel();
+}
+
+function nodeTool(tool, secId = state.sel, path = state.node) {
+  const sec = findSection(secId);
+  if (!isLayout(sec)) return;
+  const d = sec.data;
+  if (tool === 'node-addrow') { openRowPicker(secId, path ? Number(path.split('.')[1]) + 1 : null); return; }
+  if (tool === 'node-addel') { openLayoutPicker(secId, ops.addTarget(d, path)); return; }
+  if (!path) return;
+  if (tool === 'node-parent') { selectNode(secId, ops.parentOf(path)); return; }
+  const kind = ops.kindOf(path);
+  let next = path;
+  if (tool === 'node-up' || tool === 'node-down') next = ops.moveBy(d, path, tool === 'node-up' ? -1 : 1);
+  else if (tool === 'node-copy') next = ops.duplicateAt(d, path);
+  else if (tool === 'node-addcol') {
+    const rowPath = path.split('.').slice(0, 2).join('.');
+    const i = ops.addColumn(ops.getAt(d, rowPath), kind === 'row' ? null : Number(path.split('.')[3]));
+    if (i == null) { toast('A row can have up to 12 columns.'); return; }
+    next = `${rowPath}.cols.${i}`;
+  } else if (tool === 'node-delete') {
+    const label = nodeLabel(sec, path);
+    const { list, index } = ops.locate(path);
+    if (kind === 'col' && ops.getAt(d, list).length > 1) {
+      ops.removeColumn(ops.getAt(d, ops.parentOf(path)), index);
+      next = ops.parentOf(path);
+    } else {
+      // The last column of a row takes the row with it.
+      const target = kind === 'col' ? ops.parentOf(path) : path;
+      ops.removeAt(d, target);
+      next = ops.parentOf(target);
+    }
+    toast(`${label} removed`, { action: 'Undo', onAction: undo });
+  } else return;
+  layoutChanged(secId, next);
+}
+
+function openLayoutPicker(secId, target) {
+  openModal('Add an element', el('div', {},
+    el('p', {}, 'Click it on the page afterwards to type or change it, and drag it by its handle to move it.'),
+    el('div', { class: 'el-tiles' }, Object.entries(LAYOUT).map(([type, e]) =>
+      el('button', { type: 'button', class: 'el-tile', 'data-type': type, onclick: () => { closeModal(); addLayoutElement(secId, type, target); } },
+        ico(e.icon), el('strong', {}, e.label), el('small', {}, LAYOUT_HINTS[type] || ''))))));
+}
+
+function addLayoutElement(secId, type, target) {
+  const sec = findSection(secId);
+  if (!isLayout(sec) || !LAYOUT[type]) return;
+  if (!target) {
+    sec.data.rows = [...(Array.isArray(sec.data.rows) ? sec.data.rows : []), { cols: [{ span: 12, els: [] }] }];
+    target = ops.addTarget(sec.data, null);
+  }
+  const path = ops.insertAt(sec.data, target.list, target.index, LAYOUT[type].defaults());
+  state.sel = secId;
+  layoutChanged(secId, path);
+  setTimeout(() => {
+    const node = cdoc()?.querySelector(nodeSel(secId, path));
+    const text = node?.querySelector('[data-edit]');
+    if (text && (type === 'heading' || type === 'text')) { text.focus(); cdoc().getSelection()?.selectAllChildren(text); } else node?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, 60);
+  toast(`${LAYOUT[type].label} added`);
+}
+
+function openRowPicker(secId, at = null) {
+  openModal('Add a row', el('div', {},
+    el('p', {}, 'Choose the columns. You can change them, drag their edges to resize and add more later. On phones they stack.'),
+    el('div', { class: 'row-presets' }, ROW_PRESETS.map((spans) =>
+      el('button', { type: 'button', class: 'row-preset', title: presetName(spans), onclick: () => { closeModal(); addRow(secId, spans, at); } }, presetBars(spans), el('small', {}, presetName(spans)))))));
+}
+
+function addRow(secId, spans, at = null) {
+  const sec = findSection(secId);
+  if (!isLayout(sec)) return;
+  sec.data.rows = Array.isArray(sec.data.rows) ? sec.data.rows : [];
+  const path = ops.insertAt(sec.data, 'rows', at ?? sec.data.rows.length, { cols: spans.map((span) => ({ span, els: [] })) });
+  state.sel = secId;
+  layoutChanged(secId, path);
+  toast('Row added. Use “Add element” in a column to fill it.');
+}
+
+// Selection outline, toolbar, column resize handles and “+ Row” for a layout section.
+function decorateLayout(secNode, sec) {
+  const d = secNode.ownerDocument;
+  const path = currentNode(sec);
+  if (!path) {
+    const lay = secNode.querySelector('.lay');
+    if (lay) lay.insertAdjacentHTML('beforeend', `<button type="button" class="ed-row-add ed-row-add--end" data-tool="node-addrow">${icon('plus')}<span>Add row</span></button>`);
+    return;
+  }
+  const node = secNode.querySelector(`[data-node="${path}"]`);
+  if (!node) return;
+  const kind = ops.kindOf(path);
+  node.classList.add('is-node-sel');
+  for (let p = ops.parentOf(path); p; p = ops.parentOf(p)) secNode.querySelector(`[data-node="${p}"]`)?.classList.add('is-node-parent');
+  const { list, index } = ops.locate(path);
+  const count = (ops.getAt(sec.data, list) || []).length;
+  const item = nodeOf(sec, path);
+  const side = kind === 'col';
+  const tools = d.createElement('div');
+  tools.className = `ed-node-tools ed-node-tools--${kind}`;
+  const b = ([t, ic, title, dis, cls = '']) => `<button type="button" data-tool="${t}" title="${esc(title)}"${dis ? ' disabled' : ''}${cls ? ` class="${cls}"` : ''}>${icon(ic)}</button>`;
+  tools.innerHTML = `<span class="ed-node-tools__label">${esc(nodeLabel(sec, path))}</span><span class="ed-grip" draggable="true" data-drag="node" title="Drag to move">${icon('grip')}</span>`
+    + [
+      kind !== 'row' && ['node-parent', 'layers', `Select the ${kind === 'col' ? 'row' : ops.kindOf(ops.parentOf(path)) === 'el' ? 'box' : 'column'} around it`],
+      ['node-up', side ? 'chevron-right' : 'chevron-up', side ? 'Move left' : 'Move up', index === 0, side ? 'flip' : ''],
+      ['node-down', side ? 'chevron-right' : 'chevron-down', side ? 'Move right' : 'Move down', index === count - 1],
+      kind === 'row' && ['node-addcol', 'plus', 'Add a column'],
+      (kind === 'col' || item?.type === 'box') && ['node-addel', 'plus', 'Add an element'],
+      ['node-copy', 'copy', 'Duplicate'],
+      ['node-delete', 'trash', 'Remove'],
+    ].filter(Boolean).map(b).join('');
+  node.append(tools);
+  // “+ Row” under the row the selection is in, and handles between its columns (computer preview only).
+  const rowPath = path.split('.').slice(0, 2).join('.');
+  const rowNode = secNode.querySelector(`[data-node="${rowPath}"]`);
+  if (!rowNode) return;
+  rowNode.classList.add('is-node-row');
+  rowNode.insertAdjacentHTML('beforeend', `<button type="button" class="ed-row-add" data-tool="node-addrow" title="Add a row below">${icon('plus')}<span>Row</span></button>`);
+  const row = nodeOf(sec, rowPath);
+  const spans = (row?.cols || []).map((c) => ops.clampSpan(c.span));
+  if (state.device !== 'desktop' || spans.length < 2 || spans.reduce((a, s) => a + s, 0) > 12) return;
+  placeColHandles(rowNode, rowPath);
+}
+
+function placeColHandles(rowNode, rowPath) {
+  rowNode.querySelectorAll(':scope > .ed-col-handle').forEach((h) => h.remove());
+  const cols = [...rowNode.querySelectorAll(':scope > [data-kind="col"]')];
+  const rr = rowNode.getBoundingClientRect();
+  cols.slice(0, -1).forEach((col, i) => {
+    const a = col.getBoundingClientRect();
+    const next = cols[i + 1].getBoundingClientRect();
+    if (next.left < a.right - 1) return; // wrapped onto another line
+    const h = rowNode.ownerDocument.createElement('div');
+    h.className = 'ed-col-handle';
+    h.dataset.colHandle = String(i);
+    h.dataset.row = rowPath;
+    h.title = 'Drag to resize the columns';
+    h.style.left = `${(a.right + next.left) / 2 - rr.left}px`;
+    rowNode.append(h);
+  });
+}
+
+// Dragging a handle between two columns moves the line between them in twelfths.
+function startColResize(e, handle) {
+  const secId = handle.closest('[data-section-id]')?.dataset.sectionId;
+  const sec = findSection(secId);
+  const row = nodeOf(sec, handle.dataset.row);
+  const rowNode = handle.closest('[data-kind="row"]');
+  if (!row || !rowNode) return;
+  e.preventDefault();
+  const i = Number(handle.dataset.colHandle);
+  const cs = rowNode.ownerDocument.defaultView.getComputedStyle(rowNode);
+  const inner = rowNode.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const unit = (inner + (parseFloat(cs.columnGap) || 0)) / 12;
+  const start = row.cols.map((c) => ops.clampSpan(c.span));
+  const colNodes = [...rowNode.querySelectorAll(':scope > [data-kind="col"]')];
+  let spans = start;
+  handle.setPointerCapture?.(e.pointerId);
+  handle.classList.add('is-dragging');
+  const move = (ev) => {
+    const copy = { cols: start.map((span) => ({ span })) };
+    ops.moveBoundary(copy, i, (ev.clientX - e.clientX) / unit);
+    spans = copy.cols.map((c) => c.span);
+    colNodes.forEach((n, j) => { n.className = n.className.replace(/\blay__col--s\d+\b/, `lay__col--s${spans[j]}`); });
+    handle.dataset.tip = `${FRACTIONS[spans[i]] || `${spans[i]}/12`} | ${FRACTIONS[spans[i + 1]] || `${spans[i + 1]}/12`}`;
+    const a = colNodes[i].getBoundingClientRect();
+    const b2 = colNodes[i + 1].getBoundingClientRect();
+    handle.style.left = `${(a.right + b2.left) / 2 - rowNode.getBoundingClientRect().left}px`;
+  };
+  const up = () => {
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', up);
+    handle.removeEventListener('pointercancel', up);
+    if (spans.some((s, j) => s !== start[j])) {
+      row.cols.forEach((c, j) => { c.span = spans[j]; });
+      layoutChanged(secId, state.node);
+    } else decorateSelection();
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', up);
+  handle.addEventListener('pointercancel', up);
+}
+
+// Where a dragged row, column or element would land (see onCanvasDragOver).
+function nodeDropTarget(e) {
+  const secNode = e.target.closest?.('[data-section-id]');
+  const sec = secNode && findSection(secNode.dataset.sectionId);
+  if (!isLayout(sec)) return null;
+  const same = sec.id === drag.sec;
+  const inside = (n) => same && (n.dataset.node === drag.path || n.dataset.node.startsWith(`${drag.path}.`));
+  const len = (path) => (ops.getAt(sec.data, path) || []).length;
+  if (drag.nk === 'row') {
+    const row = e.target.closest('[data-kind="row"]');
+    if (row) {
+      if (inside(row)) return null;
+      const r = row.getBoundingClientRect();
+      const before = e.clientY < r.top + r.height / 2;
+      return { node: row, sec, list: 'rows', index: ops.locate(row.dataset.node).index + (before ? 0 : 1), before };
+    }
+    return { node: secNode, sec, list: 'rows', index: len('rows'), into: true };
+  }
+  if (drag.nk === 'col') {
+    const col = e.target.closest('[data-kind="col"]');
+    if (col) {
+      if (inside(col)) return null;
+      const r = col.getBoundingClientRect();
+      const before = e.clientX < r.left + r.width / 2;
+      const { list, index } = ops.locate(col.dataset.node);
+      return { node: col, sec, list, index: index + (before ? 0 : 1), before, side: true };
+    }
+    const row = e.target.closest('[data-kind="row"]');
+    return row && !inside(row) ? { node: row, sec, list: `${row.dataset.node}.cols`, index: len(`${row.dataset.node}.cols`), into: true } : null;
+  }
+  const add = e.target.closest('[data-add-el]');
+  if (add) return same && (add.dataset.addEl === drag.path || add.dataset.addEl.startsWith(`${drag.path}.`)) ? null : { node: add, sec, list: `${add.dataset.addEl}.els`, index: 0, into: true };
+  const item = e.target.closest('[data-kind="el"]');
+  if (item) {
+    if (inside(item)) return null;
+    const r = item.getBoundingClientRect();
+    const across = item.ownerDocument.defaultView.getComputedStyle(item.parentElement).flexDirection === 'row';
+    if (item.classList.contains('lx--box') && !across) {
+      const y = (e.clientY - r.top) / r.height;
+      if (y > 0.25 && y < 0.75) return { node: item, sec, list: `${item.dataset.node}.els`, index: len(`${item.dataset.node}.els`), into: true };
+    }
+    const before = across ? e.clientX < r.left + r.width / 2 : e.clientY < r.top + r.height / 2;
+    const { list, index } = ops.locate(item.dataset.node);
+    return { node: item, sec, list, index: index + (before ? 0 : 1), before, side: across };
+  }
+  const col = e.target.closest('[data-kind="col"]');
+  return col && !inside(col) ? { node: col, sec, list: `${col.dataset.node}.els`, index: len(`${col.dataset.node}.els`), into: true } : null;
+}
+
+function dropNode(t) {
+  const from = findSection(drag.sec);
+  const moved = from && ops.moveTo(from.data, drag.path, t.sec.data, t.list, t.index);
+  if (!moved) { endCanvasDrag(); return; }
+  const toId = t.sec.id;
+  afterDrag(() => {
+    state.sel = toId;
+    state.el = null;
+    state.node = moved;
+    commit(); renderCanvas(); renderInspector();
+    if (state.tab === 'layers') renderPanel();
+  });
+}
+
+// Inspector parts for layouts -------------------------------------------------
+
+function layoutCrumbs(sec) {
+  const path = currentNode(sec);
+  const parts = [[null, sec.label || BLOCKS[sec.type].label]];
+  if (path) {
+    const bits = path.split('.');
+    for (let i = 2; i <= bits.length; i += 2) { const p = bits.slice(0, i).join('.'); parts.push([p, nodeLabel(sec, p)]); }
+  }
+  return el('nav', { class: 'crumbs', 'aria-label': 'Selected piece' }, parts.flatMap(([p, label], i) => [
+    i ? el('span', { class: 'crumbs__sep' }, '›') : null,
+    el('button', { type: 'button', class: p === path ? 'is-on' : '', onclick: () => selectNode(sec.id, p) }, label),
+  ]));
+}
+
+// A list of the elements in a column or box, with buttons to add more.
+function childList(sec, listPath) {
+  const items = ops.getAt(sec.data, listPath) || [];
+  const wrap = el('div', { class: 'node-kids' });
+  if (items.length) {
+    wrap.append(el('div', { class: 'list-f' }, items.map((it, i) => {
+      const p = `${listPath}.${i}`;
+      const def = LAYOUT[it?.type];
+      return el('button', { type: 'button', class: 'node-kid', onclick: () => selectNode(sec.id, p, { scroll: true }) },
+        el('span', { class: 'el-ico' }, ico(def?.icon || 'box')), el('span', { class: 't' }, ops.nodeText(it) || def?.label || 'Element'), el('small', {}, def?.label || ''));
+    })));
+  } else wrap.append(el('p', { class: 'p-hint' }, 'Nothing here yet.'));
+  wrap.append(el('div', { class: 'el-add' }, Object.entries(LAYOUT).map(([type, e]) =>
+    el('button', { type: 'button', class: 'el-add__btn', title: `Add ${e.label.toLowerCase()}`, onclick: () => addLayoutElement(sec.id, type, { list: listPath, index: items.length }) }, ico(e.icon), e.label))));
+  return wrap;
+}
+
+function insGroup(title, ...kids) {
+  return el('details', { class: 'insp-group', open: true }, el('summary', {}, title, el('span', { class: 'chev' }, ico('chevron-down'))), el('div', {}, ...kids));
+}
+
+function nodeContent(box, sec, path) {
+  const kind = ops.kindOf(path);
+  const node = nodeOf(sec, path);
+  const refresh = () => refreshSection(sec.id);
+  if (kind === 'row') {
+    const spans = (node.cols || []).map((c) => ops.clampSpan(c.span));
+    box.append(insGroup('Columns',
+      el('div', { class: 'row-presets row-presets--sm' }, ROW_PRESETS.map((p) =>
+        el('button', { type: 'button', class: `row-preset${p.join() === spans.join() ? ' is-on' : ''}`, title: presetName(p), onclick: () => {
+          if (p.length < spans.length && !confirm('Fewer columns: the elements in the columns that go are moved into the last column. Continue?')) return;
+          ops.setSpans(node, p); layoutChanged(sec.id, path);
+        } }, presetBars(p)))),
+      el('p', { class: 'f__help' }, 'Drag the line between two columns on the page to resize them. On phones the columns stack.'),
+      el('div', { class: 'list-f' }, (node.cols || []).map((c, i) => el('button', { type: 'button', class: 'node-kid', onclick: () => selectNode(sec.id, `${path}.cols.${i}`, { scroll: true }) },
+        el('span', { class: 'el-ico' }, ico('layout')), el('span', { class: 't' }, `Column ${i + 1}`), el('small', {}, `${spanText(ops.clampSpan(c.span))} · ${(c.els || []).length} items`)))),
+      el('div', { class: 'node-actions' },
+        el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => nodeTool('node-addcol', sec.id, path) }, ico('plus'), 'Add column'),
+        el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => nodeTool('node-addrow', sec.id, path) }, ico('plus'), 'Add row below'))));
+  } else if (kind === 'col') {
+    const span = ops.clampSpan(node.span);
+    const out = el('output', {}, spanText(span));
+    const phoneSpan = ops.clampSpan(node.mobile?.span ?? 12);
+    box.append(insGroup('Column',
+      el('div', { class: 'f' }, el('label', {}, 'Width on computers', out),
+        el('input', { type: 'range', min: 1, max: 12, step: 1, value: span, 'data-path': `${path}.span`, oninput: (e) => {
+          node.span = Number(e.target.value); out.textContent = spanText(node.span); refresh(); commitSoon();
+        } })),
+      el('div', { class: 'f' }, el('span', { class: 'f__label' }, 'Width on phones'),
+        el('div', { class: 'ed-seg ed-seg--full' }, [[12, 'Full'], [6, '½'], [4, '⅓'], [3, '¼']].map(([v, l]) =>
+          el('button', { type: 'button', class: phoneSpan === v ? 'is-on' : '', onclick: () => { ops.setStyle(node, 'span', v === 12 ? '' : v, 'mobile'); layoutChanged(sec.id, path); } }, l)))),
+    ), insGroup('Elements', childList(sec, `${path}.els`)));
+  } else {
+    const def = LAYOUT[node.type];
+    const inner = el('div');
+    if (def) renderFields(inner, def.fields, sec.data, refresh, `${path}.`);
+    box.append(el('details', { class: 'insp-group', open: true }, el('summary', {}, def?.label || 'Element', el('span', { class: 'chev' }, ico('chevron-down'))), inner));
+    if (node.type === 'box') box.append(insGroup('Inside the box', childList(sec, `${path}.els`)));
+  }
+  box.append(el('div', { class: 'node-actions node-actions--foot' },
+    el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => nodeTool('node-copy', sec.id, path) }, ico('copy'), 'Duplicate'),
+    el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => { state.insTab = 'style'; renderInspector(); } }, ico('droplet'), 'Style'),
+    el('button', { type: 'button', class: 'ed-btn ed-btn--sm ed-btn--danger', onclick: () => nodeTool('node-delete', sec.id, path) }, ico('trash'), 'Remove')));
+}
+
+// The rows of a layout section, in the section's Content tab.
+function rowsGroup(sec) {
+  const rows = Array.isArray(sec.data.rows) ? sec.data.rows : [];
+  return insGroup('Rows',
+    rows.length ? el('div', { class: 'list-f' }, rows.map((r, i) => el('button', { type: 'button', class: 'node-kid', onclick: () => selectNode(sec.id, `rows.${i}`, { scroll: true }) },
+      presetBars((r.cols || []).map((c) => ops.clampSpan(c.span))), el('span', { class: 't' }, `Row ${i + 1}`), el('small', {}, presetName((r.cols || []).map((c) => ops.clampSpan(c.span))))))) : el('p', { class: 'p-hint' }, 'No rows yet.'),
+    el('div', { class: 'node-actions' }, el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => openRowPicker(sec.id) }, ico('plus'), 'Add row')));
+}
+
+// Style tab --------------------------------------------------------------------
+
+const COLOR_SWATCHES = [['primary', 'Brand'], ['accent', 'Accent'], ['dark', 'Dark'], ['text', 'Text'], ['surface', 'Tint'], ['bg', 'Page'], ['white', 'White'], ['black', 'Black']];
+
+function swatchColor(v) {
+  const t = { ...THEME_PRESETS.midnight, ...state.doc.theme };
+  return { white: '#ffffff', black: '#000000', transparent: 'transparent' }[v] || t[v] || v;
+}
+
+function styleControl(it, val, inherited, set) {
+  const wrap = el('div', { class: `f st st--${it.type}`, 'data-style': it.key });
+  const label = el('span', { class: 'f__label' }, it.label);
+  const isSet = val != null && val !== '';
+  const clear = isSet ? el('button', { type: 'button', class: 'st__clear', title: 'Reset', onclick: () => set('', { structural: true }) }, ico('x')) : null;
+  const head = el('div', { class: 'st__head' }, label, clear);
+  switch (it.type) {
+    case 'px':
+    case 'number': {
+      const screen = it.screen && val === 'screen';
+      const input = el('input', { class: 'in in--num', type: 'number', min: it.min, max: it.max, step: it.step || 1, value: screen ? '' : (val ?? ''), disabled: screen,
+        placeholder: inherited != null && inherited !== '' ? String(inherited === 'screen' ? 'full' : inherited) : it.type === 'px' ? 'auto' : '',
+        oninput: (e) => set(e.target.value === '' ? '' : Number(e.target.value), { soon: true }) });
+      const field = el('div', { class: 'st__num' }, input, it.type === 'px' ? el('span', {}, 'px') : null);
+      put(wrap, head, field);
+      if (it.screen) wrap.append(el('label', { class: 'switch switch--sm' }, 'Full screen height', el('input', { type: 'checkbox', checked: screen, onchange: (e) => set(e.target.checked ? 'screen' : '', { structural: true }) })));
+      return wrap;
+    }
+    case 'segmented':
+      put(wrap, head, el('div', { class: 'ed-seg ed-seg--full' }, it.options.map(([v, l]) =>
+        el('button', { type: 'button', class: `${String(val) === v ? 'is-on' : ''}${!isSet && String(inherited) === v ? ' is-inherited' : ''}`, onclick: () => set(String(val) === v ? '' : v, { structural: true }) }, l))));
+      return wrap;
+    case 'select':
+      put(wrap, head, el('select', { class: 'in', onchange: (e) => set(e.target.value, { structural: true }) },
+        el('option', { value: '' }, inherited != null && inherited !== '' ? `Same as all screens (${(it.options.find(([v]) => String(v) === String(inherited)) || [, inherited])[1]})` : 'Default'),
+        it.options.map(([v, l]) => el('option', { value: v, selected: String(val) === String(v) }, l))));
+      return wrap;
+    case 'toggle': {
+      const on = (isSet ? val : inherited) === true;
+      put(wrap, el('label', { class: 'switch' }, it.label, el('input', { type: 'checkbox', checked: on, onchange: (e) => set(e.target.checked ? true : inherited === true ? false : '', { structural: true }) })));
+      return wrap;
+    }
+    case 'color': {
+      const custom = el('input', { type: 'color', title: 'Custom colour', value: /^#[0-9a-f]{6}$/i.test(val || '') ? val : '#2563eb', oninput: (e) => set(e.target.value, { soon: true }), onchange: () => renderInspector() });
+      put(wrap, head, el('div', { class: 'st__colors' },
+        COLOR_SWATCHES.map(([v, l]) => el('button', { type: 'button', title: l, class: `st__sw${val === v ? ' is-on' : ''}${!isSet && inherited === v ? ' is-inherited' : ''}`, onclick: () => set(val === v ? '' : v, { structural: true }) }, el('i', { style: `background:${swatchColor(v)}` }))),
+        el('label', { class: `st__sw st__sw--custom${isSet && !COLOR_SWATCHES.some(([v]) => v === val) ? ' is-on' : ''}`, title: 'Custom colour' }, el('i', { style: isSet && !COLOR_SWATCHES.some(([v]) => v === val) ? `background:${val}` : '' }), custom)));
+      return wrap;
+    }
+    case 'image':
+      return fieldControl({ type: 'image', label: it.label }, it.key, val, (p, v, o) => set(v, o), {}, () => {});
+    default:
+      return wrap;
+  }
+}
+
+function styleTab(box, sec) {
+  const path = isLayout(sec) ? currentNode(sec) : null;
+  const node = path ? nodeOf(sec, path) : sec.data;
+  const k = path ? ops.kindOf(path) : 'section';
+  const kind = k === 'el' && node.type === 'box' ? 'box' : k;
+  const phone = state.device === 'mobile';
+  const screen = phone ? 'mobile' : 'design';
+  const values = node[screen] || {};
+  const base = node.design || {};
+  const merged = phone ? { ...base, ...values } : values;
+  const set = (key) => (v, { soon = false, structural = false } = {}) => {
+    ops.setStyle(node, key, v, screen);
+    refreshSection(sec.id);
+    if (soon) commitSoon(); else commit();
+    if (structural) renderInspector();
+  };
+  box.append(el('div', { class: 'style-screen' },
+    el('div', { class: 'ed-seg ed-seg--full' }, [['desktop', 'monitor', 'All screens'], ['mobile', 'smartphone', 'Phones']].map(([dv, ic, l]) =>
+      el('button', { type: 'button', class: state.device === dv ? 'is-on' : '', 'data-screen': dv, onclick: () => { setDevice(dv); renderInspector(); } }, ico(ic), l))),
+    el('p', { class: 'f__help' }, phone ? 'These changes only apply to phones. Empty settings use the value for all screens (shown faded).' : 'Applies to every screen. Switch to Phones to change something only there.')));
+  if (kind === 'section' && !phone) {
+    const inner = el('div');
+    renderFields(inner, STYLE_FIELDS, sec.data, () => refreshSection(sec.id));
+    box.append(el('details', { class: 'insp-group', open: true }, el('summary', {}, 'Section style', el('span', { class: 'chev' }, ico('chevron-down'))), inner));
+  }
+  for (const g of STYLE_GROUPS) {
+    const items = g.items.filter((it) => (!it.on || it.on.includes(kind) || (kind === 'box' && it.on.includes('el'))) && (!it.phoneOnly || phone) && (!it.when || it.when(merged))
+      // Space between rows only exists in layouts.
+      && !(kind === 'section' && it.key === 'gap' && !isLayout(sec)));
+    if (!items.length) continue;
+    const count = items.filter((it) => values[it.key] != null && values[it.key] !== '').length;
+    const inner = el('div', { class: `st-group st-group--${g.id}` }, items.map((it) => styleControl(it, values[it.key], phone ? base[it.key] : undefined, set(it.key))));
+    const open = count > 0 || state.openStyle.has(g.id) || (g.id === 'layout' && kind !== 'el');
+    const det = el('details', { class: 'insp-group', open, 'data-group': g.id, ontoggle: (e) => { if (e.target.open) state.openStyle.add(g.id); else state.openStyle.delete(g.id); } },
+      el('summary', {}, el('span', {}, g.label, count ? el('span', { class: 'badge' }, String(count)) : null),
+        el('span', { class: 'st-sum' }, count ? el('button', { type: 'button', class: 'st-reset', title: 'Reset these settings', onclick: (e) => {
+          e.preventDefault();
+          items.forEach((it) => ops.setStyle(node, it.key, '', screen));
+          refreshSection(sec.id); commit(); renderInspector();
+        } }, 'Reset') : null, el('span', { class: 'chev' }, ico('chevron-down')))), inner);
+    box.append(det);
+  }
+}
+
+// Pasted rich text keeps bold, italic, underline, links, lists and headings, but
+// not the fonts, sizes and colours of the page it came from.
+function cleanPastedHTML(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = stripHandlers(html);
+  const root = tpl.content;
+  root.querySelectorAll('b[id^="docs-internal-guid"]').forEach((b) => b.replaceWith(...b.childNodes));
+  root.querySelectorAll('[style]').forEach((n) => {
+    const s = n.style;
+    const wrapIn = (tag) => { const w = document.createElement(tag); w.append(...n.childNodes); n.append(w); };
+    if (/^(bold|[6-9]00)$/.test(s.fontWeight) && !n.closest('h1,h2,h3,h4,h5,h6')) wrapIn('strong');
+    if (s.fontStyle === 'italic') wrapIn('em');
+    if (/underline/.test(s.textDecorationLine || s.textDecoration)) wrapIn('u');
+    if (/line-through/.test(s.textDecorationLine || s.textDecoration)) wrapIn('s');
+    n.removeAttribute('style');
+  });
+  root.querySelectorAll('font').forEach((f) => f.replaceWith(...f.childNodes));
+  const div = document.createElement('div');
+  div.append(root);
+  return theme.cleanHTML(div.innerHTML);
+}
+
+// ---------------------------------------------------------------------------
 // Inspector (right panel)
 const SITE_FIELDS = [
   { key: 'name', label: 'Business name', type: 'text' },
@@ -788,6 +1380,15 @@ function renderInspector() {
       el('button', { class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show on live site' : 'Hide on live site', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
       el('button', { class: 'ed-icon-btn ed-icon-btn--sm', title: 'Duplicate', onclick: () => runTool('duplicate', sec.id) }, ico('copy')),
       el('button', { class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Delete', onclick: () => runTool('delete', sec.id) }, ico('trash')))));
+  // Sites with styles: a Content and a Style tab. In a layout, the selected row,
+  // column or element is shown with the way back up (Section › Row 1 › …).
+  if (STYLE_GROUPS) {
+    if (isLayout(sec)) box.append(layoutCrumbs(sec));
+    box.append(el('div', { class: 'ed-seg ed-seg--full insp-tabs' }, [['content', 'Content'], ['style', 'Style']].map(([t, l]) =>
+      el('button', { type: 'button', class: state.insTab === t ? 'is-on' : '', 'data-ins-tab': t, onclick: () => { state.insTab = t; renderInspector(); } }, l))));
+    if (state.insTab === 'style') { styleTab(box, sec); box.scrollTop = scroll; return; }
+  }
+  if (isLayout(sec) && currentNode(sec)) { nodeContent(box, sec, state.node); box.scrollTop = scroll; return; }
   // A name only the editor shows, so sections are easy to tell apart (“Spring promo”).
   box.append(el('div', { class: 'f sec-name' }, el('label', {}, 'Section name ', el('small', {}, '(only you see this)')),
     el('input', { class: 'in', 'data-path': '__label', value: sec.label || '', placeholder: block.label, maxlength: 60, oninput: (e) => {
@@ -796,12 +1397,14 @@ function renderInspector() {
       decorateSelection();
       if (state.tab === 'layers') renderPanel();
     } })));
-  const groups = [['Content', block.fields, true], ['Section style', STYLE_FIELDS, true]];
+  // With styles, the section's look is in the Style tab.
+  const groups = [['Content', block.fields, true], ...(STYLE_GROUPS ? [] : [['Section style', STYLE_FIELDS, true]])];
   for (const [title, fields, open] of groups) {
     const inner = el('div');
     renderFields(inner, fields, sec.data, () => refreshSection(sec.id));
     box.append(el('details', { class: 'insp-group', open }, el('summary', {}, title, el('span', { class: 'chev' }, ico('chevron-down'))), inner));
-    if (title === 'Content' && Object.keys(ELEMENTS).length) box.append(elementsGroup(sec));
+    if (title === 'Content' && isLayout(sec)) box.append(rowsGroup(sec));
+    else if (title === 'Content' && Object.keys(ELEMENTS).length) box.append(elementsGroup(sec));
   }
   box.scrollTop = scroll;
 }
@@ -1214,6 +1817,7 @@ async function imageToDataURL(file) {
 // ---------------------------------------------------------------------------
 // Left panel
 const THUMBS = {
+  layout: '<div class="thumb"><div class="t-row"><div class="t-box" style="flex:2"></div><div class="t-box"></div></div><div class="t-row"><div class="t-box"></div><div class="t-box"></div><div class="t-box"></div></div></div>',
   hero: '<div class="thumb thumb--dark"><div class="t-row"><div style="display:grid;gap:4px"><i style="width:40%" class="t-acc"></i><i></i><i style="width:70%"></i><div class="t-row" style="width:60%"><i class="t-acc" style="height:8px"></i><i style="height:8px"></i></div></div><div class="t-box" style="height:36px"></div></div></div>',
   logos: '<div class="thumb"><div class="t-row"><i></i><i></i><i></i><i></i></div></div>',
   services: '<div class="thumb"><i style="width:40%;margin:0 auto" class="t-dark"></i><div class="t-row"><div class="t-box"></div><div class="t-box"></div><div class="t-box"></div></div></div>',
@@ -1389,6 +1993,25 @@ function panelLayers(box) {
       el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show' : 'Hide', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
       el('button', { type: 'button', class: 'ed-icon-btn ed-icon-btn--sm ed-icon-btn--danger', title: 'Delete', onclick: () => runTool('delete', sec.id) }, ico('trash'))));
     list.append(li);
+    // A layout's rows, columns and elements, indented under it.
+    if (isLayout(sec)) {
+      const add = (node, path, kind, depth) => {
+        const def = kind === 'el' ? LAYOUT[node?.type] : null;
+        const label = kind === 'el' ? (ops.nodeText(node) || def?.label || 'Element') : nodeLabel(sec, path);
+        list.append(el('li', { class: `layer layer--el layer--d${Math.min(depth, 4)}${state.sel === sec.id && state.node === path ? ' is-sel' : ''}`, 'data-layer-node': path, onclick: () => selectNode(sec.id, path, { scroll: true }) },
+          el('span', { class: 'layer__icon' }, ico(kind === 'row' ? 'grid' : kind === 'col' ? 'layout' : def?.icon || 'box')),
+          el('span', { class: 'layer__txt' }, el('strong', {}, label), el('small', {}, kind === 'el' ? def?.label || '' : kind === 'col' ? spanText(ops.clampSpan(node.span)) : presetName((node.cols || []).map((c) => ops.clampSpan(c.span)))))));
+      };
+      const walkEls = (els, base, depth) => (Array.isArray(els) ? els : []).forEach((it, k) => {
+        const p = `${base}.els.${k}`;
+        add(it, p, 'el', depth);
+        if (it?.type === 'box') walkEls(it.els, p, depth + 1);
+      });
+      (sec.data.rows || []).forEach((row, r) => {
+        add(row, `rows.${r}`, 'row', 1);
+        (row.cols || []).forEach((col, c) => { add(col, `rows.${r}.cols.${c}`, 'col', 2); walkEls(col.els, `rows.${r}.cols.${c}`, 3); });
+      });
+    }
     // The section's elements, indented under it.
     elementsOf(sec).forEach((item, n) => {
       const def = ELEMENTS[item?.type];
@@ -1976,6 +2599,9 @@ function panelRedirects(body) {
 // newer than the last one seen get a "New" badge, and the Help button a dot.
 // feature: shown only when the connected site supports it.
 const WHATS_NEW = [
+  { v: 3, feature: 'layout-builder', title: 'Design your own sections', text: 'Add a “Layout” section (Add → Basic) and build it from rows and columns. Drag elements between columns, drag the line between columns to resize them, and add boxes for cards.', show: () => setTab('add') },
+  { v: 3, feature: 'rich-text', title: 'A real text editor', text: 'In a layout, click text and type. Select words to make them bold, add links, lists, headings, colours and sizes from the toolbar that appears.' },
+  { v: 3, feature: 'section-styles', title: 'Style anything', text: 'The new Style tab changes the colours, spacing, borders, shadows and fonts of any section, and of every row, column and element in a layout. Switch it to Phones to change something only on phones.' },
   { v: 2, title: 'Jump to anything', text: 'Press Ctrl+K (⌘K on a Mac) and type a few letters to go to any page, section, blog post or setting.', show: () => openPalette() },
   { v: 2, title: 'Find your drafts', text: 'The Blog tab can show just Drafts, Live or Scheduled posts, and find one by name. The word count shows while you write.', show: () => setTab('blog') },
   { v: 2, feature: 'task-lists', title: 'Checklists in posts', text: 'The tick-box button in the writing toolbar starts a checklist visitors can tick off. Long posts start with an “In this post” list, and every post has a Print button.' },
@@ -2911,6 +3537,10 @@ function onGlobalKey(e) {
   if (inField) return;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+  // With a piece of a layout selected, Delete, Ctrl+D and Escape act on it (Escape selects what it sits in).
+  else if (state.node && state.sel && $('#modal').hidden && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); nodeTool('node-delete'); }
+  else if (state.node && state.sel && $('#modal').hidden && mod && e.key.toLowerCase() === 'd') { e.preventDefault(); nodeTool('node-copy'); }
+  else if (state.node && state.sel && e.key === 'Escape' && $('#modal').hidden) selectNode(state.sel, ops.parentOf(state.node));
   // With an element selected, Delete, Ctrl+D and Escape act on the element.
   else if (state.el != null && state.sel && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); elementTool('el-delete', state.sel, state.el); }
   else if (state.el != null && state.sel && mod && e.key.toLowerCase() === 'd') { e.preventDefault(); elementTool('el-copy', state.sel, state.el); }
