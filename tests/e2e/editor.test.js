@@ -1385,3 +1385,51 @@ test('widgets: premade sections inside a layout column', async (t) => {
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });
+
+test('make premade sections fully editable: one section, a whole page, or as they are added', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('convert-layout')) { t.skip('the site cannot convert sections yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+
+  // One section: the services grid becomes cards that can be selected one by one
+  await canvas.locator('.blk-services').first().click({ position: { x: 5, y: 5 } });
+  await p.click('#inspector [data-make-editable]');
+  await p.locator('.toast', { hasText: 'is now fully editable' }).waitFor();
+  const sec = canvas.locator('[data-section-id="s-services"]');
+  await sec.locator('.lx-box--card').nth(5).waitFor();
+  assert.ok(await sec.evaluate((n) => n.classList.contains('blk-layout')));
+  await sec.locator('.lx-box--card .lx--heading').first().click();
+  assert.equal(await p.locator('#inspector .crumbs .is-on').innerText(), 'Heading');
+  let doc = await savedDraft(p);
+  const services = doc.pages[0].sections.find((s) => s.id === 's-services');
+  assert.equal(services.type, 'layout');
+  assert.equal(services.data.anchor, 'services', 'links to #services keep working');
+  // Undo brings the premade section back
+  await p.keyboard.press('Escape'); await p.keyboard.press('Escape'); await p.keyboard.press('Escape'); await p.keyboard.press('Escape');
+  await p.keyboard.press('Control+z');
+  await canvas.locator('[data-section-id="s-services"].blk-services').waitFor();
+
+  // A whole page from Pages
+  await p.click('.ed-rail button[data-tab="pages"]');
+  await p.locator('.page-item.is-current button', { hasText: 'Make fully editable' }).click();
+  await p.locator('.toast', { hasText: /sections on “Home” are now fully editable/ }).waitFor();
+  doc = await savedDraft(p);
+  assert.deepEqual([...new Set(doc.pages[0].sections.map((s) => s.type))], ['layout']);
+  await canvas.locator('.blk-layout h1.lx-h').waitFor();
+  await canvas.locator('.status-card').waitFor();
+
+  // New premade sections can arrive fully editable
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .add-editable input').check();
+  await p.locator('#panel .block-card', { hasText: 'Call to action' }).first().click();
+  doc = await savedDraft(p);
+  assert.equal(doc.pages[0].sections.at(-1).type, 'layout');
+  assert.match(JSON.stringify(doc.pages[0].sections.at(-1).data.rows), /"style":"light"/, 'the call to action’s white button came along');
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});

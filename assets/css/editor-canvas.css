@@ -145,3 +145,4 @@ html { scroll-behavior: auto; }
 .ed-rt__colors i { width: 20px; height: 20px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .35); }
 .ed-rt__custom { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: 12.5px; cursor: pointer; }
 .ed-rt__custom input { width: 30px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
+.edit-mode .lx-box--card:hover { transform: none; }

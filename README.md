@@ -57,6 +57,12 @@ Add a **Layout** section (Add → Basic) to design a section from scratch:
   text colour, font, size and alignment, and hiding on computers or phones. Switch it to
   **Phones** to change something only on phones; the preview switches with it.
 
+- **Make fully editable.** A premade section (hero, services, image + text, FAQ, …) has a
+  **Make fully editable** button: it is rebuilt from rows, columns and elements and looks the
+  same, so every heading, button, card and image can be moved, restyled or removed. **Pages →
+  Make fully editable** does a whole page, and **Add as fully editable** (top of the Add tab)
+  adds new premade sections that way. Undo brings the original back.
+
 ### Checkup
 
 The **Checkup** tab runs the site's own checks (`audit.js` in the site repo) as you work. It finds
