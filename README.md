@@ -251,6 +251,10 @@ npm install --no-save playwright && npx playwright install chromium
 SITE_DIR=site npm run test:e2e
 ```
 
+The tests load the site's code from `SITE_DIR` but its content from `tests/fixtures/site.json`, a
+frozen copy, because they click on particular sections; changes to the live pages don't break
+them. Refresh the copy when a test needs newer content.
+
 | Path | Purpose |
 | --- | --- |
 | `index.html`, `assets/js/editor.js` | The editor |
