@@ -14,15 +14,20 @@ import { createHash } from 'node:crypto';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SITE_DIR = resolve(process.env.SITE_DIR || join(ROOT, 'site'));
+// The site's content as it was when these tests were written: the tests click on its
+// sections, so they use this copy instead of the site's current pages (only the site's
+// code is tested live).
+const CONTENT = join(ROOT, 'tests/fixtures/site.json');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.xml': 'application/xml', '.txt': 'text/plain', '.png': 'image/png', '.webp': 'image/webp' };
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAAABJRU5ErkJggg==', 'base64');
 
 // Static server like GitHub Pages: folder index.html, 404.html, and CORS for every file.
-function staticServer(dir) {
+// `files` serves some paths from elsewhere.
+function staticServer(dir, files = {}) {
   return createServer(async (req, res) => {
     const url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    let file = normalize(join(dir, url));
-    if (!file.startsWith(dir)) { res.writeHead(403).end(); return; }
+    let file = files[url] || normalize(join(dir, url));
+    if (!files[url] && !file.startsWith(dir)) { res.writeHead(403).end(); return; }
     const headers = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
     try {
       if ((await stat(file)).isDirectory()) file = join(file, 'index.html');
@@ -39,7 +44,7 @@ const isNoise = (t) => /fonts\.g|ERR_CERT|ERR_TUNNEL|ERR_NAME|ERR_INTERNET|ERR_C
 
 before(async () => {
   await stat(join(SITE_DIR, 'assets/js/theme-api.js'));
-  site = staticServer(SITE_DIR);
+  site = staticServer(SITE_DIR, { '/content/site.json': CONTENT });
   siteUrl = await listen(site);
   // A copy of the editor configured for the local site.
   tmp = await mkdtemp(join(tmpdir(), 'rts-editor-'));
@@ -143,7 +148,7 @@ test('editor loads the theme and content from the site and publishes a full buil
   assert.match(await preview.locator('.hero__title').first().innerText(), /Edited from the standalone editor/);
   const vars = await preview.evaluate(() => { const cs = getComputedStyle(document.documentElement); return [cs.getPropertyValue('--c-primary').trim(), cs.getPropertyValue('--font-head')]; });
   assert.equal(vars[0], '#059669', 'preview uses the draft color theme');
-  const headingFont = JSON.parse(await readFile(join(SITE_DIR, 'content/site.json'), 'utf8')).theme.headingFont;
+  const headingFont = JSON.parse(await readFile(CONTENT, 'utf8')).theme.headingFont;
   assert.ok(vars[1].includes(headingFont), `preview uses the draft heading font (${vars[1]})`);
   await preview.click('.nav__list a:has-text("Services")');
   assert.ok(preview.url().startsWith(editorUrl) && /path=%2Fservices%2F/.test(preview.url()), preview.url());
@@ -336,7 +341,7 @@ test('publishing over changes made somewhere else asks first', async () => {
 
   // No question when the repository still has the version the draft started from
   const ctx2 = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
-  await mockGitHub(ctx2, { contentSha: gitSha(await readFile(join(SITE_DIR, 'content/site.json'))) });
+  await mockGitHub(ctx2, { contentSha: gitSha(await readFile(CONTENT)) });
   const p2 = await newPage(ctx2);
   p2.on('dialog', (d) => { dialogs.push(d.message()); return d.dismiss(); });
   await p2.goto(`${editorUrl}/`, { waitUntil: 'load' });
@@ -532,7 +537,7 @@ test('the link picker links pages, sections, posts, email and web addresses', as
   await body.fill('Write to us today.');
   await body.evaluate((ta) => { ta.focus(); ta.setSelectionRange(0, 11); });
   await p.click('#panel .md-tools button[title="Link"]');
-  const email = JSON.parse(await readFile(join(SITE_DIR, 'content/site.json'), 'utf8')).site.email;
+  const email = JSON.parse(await readFile(CONTENT, 'utf8')).site.email;
   await modal.locator('.link-row', { hasText: `Email ${email}` }).click();
   assert.equal(await body.inputValue(), `[Write to us](mailto:${email}) today.`);
   assert.deepEqual(dialogs, [], 'no browser prompts');
@@ -713,6 +718,9 @@ test('element cards in the panel reorder by dragging their grip', async (t) => {
   for (const label of ['Heading', 'Text', 'Button']) await p.locator('#inspector .el-add__btn', { hasText: new RegExp(`^${label}$`) }).click();
   await p.keyboard.press('Escape');
   await p.locator('#inspector [data-el-card="2"]').waitFor();
+  // Adding an element smooth-scrolls its card into view; Escape redraws the panel partway
+  // through on a busy machine, which can leave the cards below the window. Bring them into view.
+  await p.locator('#inspector [data-el-card="1"]').evaluate((n) => n.scrollIntoView({ block: 'center' }));
   // Measure once the panel has stopped moving (it re-renders after Escape).
   let grip; let target;
   for (let i = 0; i < 20; i++) {
@@ -1333,5 +1341,47 @@ test('styles for any piece (with phone changes) and the rich text toolbar', asyn
   assert.match((await layoutData(p)).rows[0].cols[0].els[1].html, /<p>Hi<\/p>$/);
   // (the page's security policy refuses to run the injected handler, which is logged)
   assert.deepEqual(p.errors.filter((m) => !/inline event handler/.test(m)), []);
+  await ctx.close();
+});
+
+test('widgets: premade sections inside a layout column', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('layout-widgets')) { t.skip('the site does not have widgets yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .block-card', { hasText: 'Layout' }).first().click();
+  const sec = canvas.locator('.blk-layout').first();
+  await sec.locator('.lx--heading').click();
+  await p.keyboard.press('Escape');
+  await p.keyboard.press('Escape');
+  // The column's panel offers the basic elements, and More… for the rest
+  await p.locator('#inspector .el-add__more').click();
+  await p.locator('.el-picker .p-sub', { hasText: 'Forms, galleries and more' }).waitFor();
+  await p.locator('.el-tile[data-type="w-faq"]').click();
+  const faq = sec.locator('[data-node="rows.0.cols.0.els.3"].lx--w-faq');
+  await faq.locator('.faq__item').first().waitFor();
+  // Its text is typed on the page; its questions are edited in the panel
+  const heading = faq.locator('[data-edit="rows.0.cols.0.els.3.heading"]');
+  await heading.click();
+  await heading.press('Control+a');
+  await heading.pressSequentially('Good to know');
+  await heading.press('Enter');
+  await p.locator('#inspector .list-add').click();
+  await faq.locator('.faq__item').nth(2).waitFor();
+  await p.waitForTimeout(700);
+  const el = (await layoutData(p)).rows[0].cols[0].els[3];
+  assert.equal(el.type, 'w-faq');
+  assert.equal(el.heading, 'Good to know');
+  assert.equal(el.items.length, 3);
+  // It is published with the page, FAQ data included
+  const built = theme.buildSite(await savedDraft(p), { origin: 'https://example.com' }).files.get('index.html');
+  assert.match(built, /lx--w-faq lx--widget/);
+  assert.match(built, /"@type":"FAQPage"/);
+  assert.deepEqual(p.errors, []);
   await ctx.close();
 });

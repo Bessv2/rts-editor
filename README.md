@@ -44,7 +44,9 @@ Add a **Layout** section (Add → Basic) to design a section from scratch:
   them, and add, move or remove columns with the toolbar on the page.
 - **Elements.** Use **Add element** in a column for headings, text, images, buttons, icons, boxes
   (cards or panels that hold elements of their own) and more. Drag an element by its handle into
-  another column, box or layout section.
+  another column, box or layout section. **More…** adds forms (contact, quote request), FAQ, a
+  photo gallery, blog posts, a booking calendar, a map and the other premade sections, sized to
+  the column.
 - **Selecting.** Click the innermost piece you want. The breadcrumb at the top of the panel
   (Layout › Row 1 › Column 2 › Heading) and Escape go back up; Layers shows the whole tree.
 - **Text toolbar.** Click text in a layout and type. Select words for paragraph or heading,
@@ -248,6 +250,10 @@ git clone https://github.com/Bessv2/RTS site
 npm install --no-save playwright && npx playwright install chromium
 SITE_DIR=site npm run test:e2e
 ```
+
+The tests load the site's code from `SITE_DIR` but its content from `tests/fixtures/site.json`, a
+frozen copy, because they click on particular sections; changes to the live pages don't break
+them. Refresh the copy when a test needs newer content.
 
 | Path | Purpose |
 | --- | --- |

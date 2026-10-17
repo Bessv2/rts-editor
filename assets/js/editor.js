@@ -904,12 +904,18 @@ function nodeTool(tool, secId = state.sel, path = state.node) {
   layoutChanged(secId, next);
 }
 
+// Basic elements first, then the premade sections that can sit in a column (widgets).
+const layoutGroups = () => {
+  const all = Object.entries(LAYOUT);
+  return [['Elements', all.filter(([, e]) => e.group !== 'Widgets')], ['Forms, galleries and more', all.filter(([, e]) => e.group === 'Widgets')]].filter(([, list]) => list.length);
+};
+
 function openLayoutPicker(secId, target) {
-  openModal('Add an element', el('div', {},
+  const tile = ([type, e]) => el('button', { type: 'button', class: 'el-tile', 'data-type': type, onclick: () => { closeModal(); addLayoutElement(secId, type, target); } },
+    ico(e.icon), el('strong', {}, e.label), el('small', {}, LAYOUT_HINTS[type] || e.description || ''));
+  openModal('Add an element', el('div', { class: 'el-picker' },
     el('p', {}, 'Click it on the page afterwards to type or change it, and drag it by its handle to move it.'),
-    el('div', { class: 'el-tiles' }, Object.entries(LAYOUT).map(([type, e]) =>
-      el('button', { type: 'button', class: 'el-tile', 'data-type': type, onclick: () => { closeModal(); addLayoutElement(secId, type, target); } },
-        ico(e.icon), el('strong', {}, e.label), el('small', {}, LAYOUT_HINTS[type] || ''))))));
+    layoutGroups().flatMap(([title, list]) => [el('p', { class: 'p-sub' }, title), el('div', { class: 'el-tiles' }, list.map(tile))])));
 }
 
 function addLayoutElement(secId, type, target) {
@@ -1140,8 +1146,11 @@ function childList(sec, listPath) {
         el('span', { class: 'el-ico' }, ico(def?.icon || 'box')), el('span', { class: 't' }, ops.nodeText(it) || def?.label || 'Element'), el('small', {}, def?.label || ''));
     })));
   } else wrap.append(el('p', { class: 'p-hint' }, 'Nothing here yet.'));
-  wrap.append(el('div', { class: 'el-add' }, Object.entries(LAYOUT).map(([type, e]) =>
-    el('button', { type: 'button', class: 'el-add__btn', title: `Add ${e.label.toLowerCase()}`, onclick: () => addLayoutElement(sec.id, type, { list: listPath, index: items.length }) }, ico(e.icon), e.label))));
+  // The basic elements as buttons; forms, galleries and the rest are under More.
+  const target = { list: listPath, index: items.length };
+  wrap.append(el('div', { class: 'el-add' }, Object.entries(LAYOUT).filter(([, e]) => e.group !== 'Widgets').map(([type, e]) =>
+    el('button', { type: 'button', class: 'el-add__btn', title: `Add ${e.label.toLowerCase()}`, onclick: () => addLayoutElement(sec.id, type, target) }, ico(e.icon), e.label)),
+  el('button', { type: 'button', class: 'el-add__btn el-add__more', title: 'Forms, FAQ, gallery, blog posts, booking, map and more', onclick: () => openLayoutPicker(sec.id, target) }, ico('plus'), 'More…')));
   return wrap;
 }
 
@@ -2600,6 +2609,7 @@ function panelRedirects(body) {
 // feature: shown only when the connected site supports it.
 const WHATS_NEW = [
   { v: 3, feature: 'layout-builder', title: 'Design your own sections', text: 'Add a “Layout” section (Add → Basic) and build it from rows and columns. Drag elements between columns, drag the line between columns to resize them, and add boxes for cards.', show: () => setTab('add') },
+  { v: 3, feature: 'layout-widgets', title: 'Forms, FAQ and galleries anywhere', text: 'In a layout, “Add element” → More… puts a contact or quote form, FAQ, photo gallery, blog posts, booking calendar, map and more into any column.' },
   { v: 3, feature: 'rich-text', title: 'A real text editor', text: 'In a layout, click text and type. Select words to make them bold, add links, lists, headings, colours and sizes from the toolbar that appears.' },
   { v: 3, feature: 'section-styles', title: 'Style anything', text: 'The new Style tab changes the colours, spacing, borders, shadows and fonts of any section, and of every row, column and element in a layout. Switch it to Phones to change something only on phones.' },
   { v: 2, title: 'Jump to anything', text: 'Press Ctrl+K (⌘K on a Mac) and type a few letters to go to any page, section, blog post or setting.', show: () => openPalette() },

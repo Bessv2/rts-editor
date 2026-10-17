@@ -1,0 +1,1017 @@
+{
+  "version": 2,
+  "site": {
+    "name": "Roe Technology Services",
+    "url": "https://roetechnologyservices.com",
+    "tagline": "Consulting and technology services for small to medium businesses and residential clients.",
+    "description": "Roe Technology Services provides IT consulting, networking, security, device deployment and support for small to medium businesses and homes.",
+    "logo": "",
+    "logoIcon": "shield-check",
+    "email": "info@roetechnologyservices.com",
+    "phone": "",
+    "location": "Serving local businesses and homes",
+    "headerStyle": "light",
+    "headerCta": {
+      "label": "Free consultation",
+      "href": "/contact/"
+    },
+    "footerText": "Reliable IT, done right.",
+    "formEndpoint": "https://formspree.io/f/myezrgov",
+    "announcement": {
+      "enabled": false
+    }
+  },
+  "theme": {
+    "preset": "violet",
+    "primary": "#7c3aed",
+    "accent": "#f472b6",
+    "dark": "#140f26",
+    "bg": "#ffffff",
+    "surface": "#f6f4fd",
+    "text": "#1a1530",
+    "headingFont": "Plus Jakarta Sans",
+    "bodyFont": "Inter",
+    "radius": "soft",
+    "buttons": "rounded"
+  },
+  "pages": [
+    {
+      "id": "p-home",
+      "title": "Home",
+      "slug": "",
+      "showInNav": true,
+      "seoTitle": "Roe Technology Services | IT Consulting for Business & Home",
+      "seoDescription": "Reliable IT consulting, networking, security and device management for small to medium businesses and residential clients.",
+      "sections": [
+        {
+          "id": "s-hero",
+          "type": "hero",
+          "data": {
+            "bg": "dark",
+            "pad": "spacious",
+            "layout": "split",
+            "eyebrow": "IT consulting · Business & residential",
+            "heading": "Reliable technology for growing businesses and modern homes.",
+            "text": "From secure networks and firewalls to device rollouts and disaster recovery, Roe Technology Services keeps your technology running so you can focus on what matters.",
+            "primary": {
+              "label": "Book a free consultation",
+              "href": "/contact/"
+            },
+            "secondary": {
+              "label": "Explore services",
+              "href": "/services/"
+            },
+            "image": "",
+            "cardTitle": "Your IT, handled",
+            "highlights": [
+              {
+                "text": "Firewall & network secured"
+              },
+              {
+                "text": "Backups & recovery tested"
+              },
+              {
+                "text": "Devices deployed & managed"
+              },
+              {
+                "text": "Support when you need it"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-logos",
+          "type": "logos",
+          "data": {
+            "bg": "alt",
+            "pad": "compact",
+            "heading": "Experienced with",
+            "items": [
+              {
+                "name": "Windows"
+              },
+              {
+                "name": "Microsoft 365"
+              },
+              {
+                "name": "Google Workspace"
+              },
+              {
+                "name": "Apple Business Manager"
+              },
+              {
+                "name": "Chromebooks"
+              },
+              {
+                "name": "iPad"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-services",
+          "type": "services",
+          "data": {
+            "bg": "light",
+            "pad": "normal",
+            "columns": "3",
+            "style": "card",
+            "anchor": "services",
+            "eyebrow": "What we do",
+            "heading": "IT services that scale with you",
+            "intro": "Ground-level support through high-level system integration and security — one trusted partner for all of it.",
+            "items": [
+              {
+                "icon": "shield-check",
+                "title": "Network & firewall security",
+                "text": "Modern firewall configuration, secure network design and ongoing hardening to keep threats out."
+              },
+              {
+                "icon": "wifi",
+                "title": "Networking & Wi-Fi",
+                "text": "Switches, routers and wireless setup and maintenance for reliable, fast connectivity."
+              },
+              {
+                "icon": "refresh",
+                "title": "Disaster recovery",
+                "text": "Domain recovery, backup strategy and IT disaster recovery planning so you're never caught off guard."
+              },
+              {
+                "icon": "laptop",
+                "title": "Device deployment",
+                "text": "Windows rollouts and upgrades, Apple Business Manager and iPad setups, and fleet-scale Chromebook management."
+              },
+              {
+                "icon": "camera",
+                "title": "Security cameras",
+                "text": "Installation of camera surveillance and security systems for your business or home."
+              },
+              {
+                "icon": "headset",
+                "title": "Support & troubleshooting",
+                "text": "Hands-on help for hardware, software and performance issues across desktops, laptops and mobile devices."
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-stats",
+          "type": "stats",
+          "data": {
+            "bg": "dark",
+            "pad": "compact",
+            "items": [
+              {
+                "value": "10+",
+                "label": "Years of IT experience"
+              },
+              {
+                "value": "1,000+",
+                "label": "Chromebooks deployed"
+              },
+              {
+                "value": "A+",
+                "label": "CompTIA certified"
+              },
+              {
+                "value": "Biz + Home",
+                "label": "Business & residential"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-about",
+          "type": "split",
+          "data": {
+            "bg": "light",
+            "pad": "normal",
+            "side": "left",
+            "eyebrow": "Why Roe Technology",
+            "heading": "Enterprise-grade experience, small-business attention.",
+            "text": "We bring over a decade of hands-on IT experience — from large-scale operating system rollouts to cybersecurity assessments — and apply it to the needs of your business or home.",
+            "bullets": [
+              {
+                "text": "Certified, hands-on expertise"
+              },
+              {
+                "text": "Clear communication, no jargon"
+              },
+              {
+                "text": "Solutions sized to your budget"
+              }
+            ],
+            "button": {
+              "label": "About us",
+              "href": "/about/"
+            },
+            "image": "",
+            "panelIcon": "shield-check",
+            "panelText": "Secure. Reliable. Supported."
+          }
+        },
+        {
+          "id": "s-steps",
+          "type": "steps",
+          "data": {
+            "bg": "alt",
+            "pad": "normal",
+            "eyebrow": "How we work",
+            "heading": "A simple, proven process",
+            "intro": "",
+            "items": [
+              {
+                "title": "Assess",
+                "text": "We review your current setup, risks and goals."
+              },
+              {
+                "title": "Plan",
+                "text": "You get a clear recommendation and transparent quote."
+              },
+              {
+                "title": "Implement",
+                "text": "We install, configure and test everything properly."
+              },
+              {
+                "title": "Support",
+                "text": "Ongoing maintenance and help whenever you need it."
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-home-blog",
+          "type": "blogfeed",
+          "data": {
+            "bg": "light",
+            "pad": "normal",
+            "eyebrow": "From the blog",
+            "heading": "Latest tech news & tips",
+            "intro": "",
+            "show": "all",
+            "limit": "3",
+            "layout": "grid",
+            "showTags": false
+          }
+        },
+        {
+          "id": "s-cta",
+          "type": "cta",
+          "data": {
+            "bg": "brand",
+            "pad": "normal",
+            "heading": "Let's make your technology work for you.",
+            "text": "Book a free consultation and get a clear plan for your network, devices and security.",
+            "primary": {
+              "label": "Get in touch",
+              "href": "/contact/"
+            },
+            "secondary": {
+              "label": "",
+              "href": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "p-services",
+      "title": "Services",
+      "slug": "services",
+      "showInNav": true,
+      "seoTitle": "Services | Roe Technology Services",
+      "seoDescription": "Firewall and network security, disaster recovery, device deployment, camera systems, servers and IT support.",
+      "sections": [
+        {
+          "id": "s-sv-hero",
+          "type": "hero",
+          "data": {
+            "bg": "dark",
+            "pad": "normal",
+            "layout": "center",
+            "eyebrow": "Services",
+            "heading": "Everything your technology needs.",
+            "text": "One partner for networking, security, devices, servers and support — for businesses and homes.",
+            "primary": {
+              "label": "Request a quote",
+              "href": "/contact/"
+            },
+            "secondary": {
+              "label": "",
+              "href": ""
+            },
+            "image": "",
+            "cardTitle": "",
+            "highlights": []
+          }
+        },
+        {
+          "id": "s-sv-grid",
+          "type": "services",
+          "data": {
+            "bg": "light",
+            "pad": "normal",
+            "columns": "3",
+            "style": "card",
+            "eyebrow": "",
+            "heading": "",
+            "intro": "",
+            "items": [
+              {
+                "icon": "shield-check",
+                "title": "Firewalls & network security",
+                "text": "Configuration of modern firewalls and secure network architecture."
+              },
+              {
+                "icon": "network",
+                "title": "Network setup & maintenance",
+                "text": "Switches, routers and wireless — designed, installed and maintained."
+              },
+              {
+                "icon": "server",
+                "title": "Servers",
+                "text": "Server installation, configuration and ongoing maintenance."
+              },
+              {
+                "icon": "refresh",
+                "title": "Disaster recovery",
+                "text": "Domain recovery and IT disaster recovery planning."
+              },
+              {
+                "icon": "lock",
+                "title": "Cybersecurity assessments",
+                "text": "After-action assessments and vulnerability mitigation."
+              },
+              {
+                "icon": "monitor",
+                "title": "Windows rollouts",
+                "text": "Large-scale Windows operating system deployments and upgrades."
+              },
+              {
+                "icon": "tablet",
+                "title": "Apple & iPad deployment",
+                "text": "Apple Business Manager setup and iPad deployments for organizations."
+              },
+              {
+                "icon": "school",
+                "title": "Chromebook fleets",
+                "text": "Deployment and management of 1,000+ device Chromebook fleets for education."
+              },
+              {
+                "icon": "camera",
+                "title": "Camera & security systems",
+                "text": "Surveillance camera and security system installation."
+              },
+              {
+                "icon": "headset",
+                "title": "End-user support",
+                "text": "Help with applications, performance and IT best practices."
+              },
+              {
+                "icon": "box",
+                "title": "Asset management",
+                "text": "Inventory control and lifecycle management for your hardware."
+              },
+              {
+                "icon": "plug",
+                "title": "Cabling & buildouts",
+                "text": "Project management for new construction cabling infrastructure."
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-sv-faq",
+          "type": "faq",
+          "data": {
+            "bg": "alt",
+            "pad": "normal",
+            "eyebrow": "FAQ",
+            "heading": "Common questions",
+            "intro": "",
+            "items": [
+              {
+                "q": "Do you work with both businesses and homes?",
+                "a": "Yes. We support small to medium businesses as well as residential clients who want reliable, secure technology at home."
+              },
+              {
+                "q": "Can you help after a security incident?",
+                "a": "Yes. We perform cybersecurity after-action assessments and help mitigate vulnerabilities so the same problem doesn't happen again."
+              },
+              {
+                "q": "How do I get started?",
+                "a": "Reach out through the contact page. We'll schedule a free consultation to understand your needs and recommend next steps."
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-sv-cta",
+          "type": "cta",
+          "data": {
+            "bg": "brand",
+            "pad": "normal",
+            "heading": "Not sure what you need?",
+            "text": "Tell us about your setup and we'll point you in the right direction.",
+            "primary": {
+              "label": "Contact us",
+              "href": "/contact/"
+            },
+            "secondary": {
+              "label": "",
+              "href": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "p-about",
+      "title": "About",
+      "slug": "about",
+      "showInNav": true,
+      "seoTitle": "About | Roe Technology Services",
+      "seoDescription": "Over 10 years of comprehensive IT experience, A+ certified, supporting businesses and homes.",
+      "sections": [
+        {
+          "id": "s-ab-hero",
+          "type": "hero",
+          "data": {
+            "bg": "dark",
+            "pad": "normal",
+            "layout": "center",
+            "eyebrow": "About",
+            "heading": "Reliable, innovative IT — tailored to you.",
+            "text": "Roe Technology Services helps clients strengthen their technology infrastructure and reach their goals efficiently.",
+            "primary": {
+              "label": "",
+              "href": ""
+            },
+            "secondary": {
+              "label": "",
+              "href": ""
+            },
+            "image": "",
+            "cardTitle": "",
+            "highlights": []
+          }
+        },
+        {
+          "id": "s-ab-story",
+          "type": "split",
+          "data": {
+            "bg": "light",
+            "pad": "normal",
+            "side": "right",
+            "eyebrow": "Who we are",
+            "heading": "Over 10 years of comprehensive IT experience.",
+            "text": "Roe Technology Services is led by an A+ certified IT professional whose experience spans foundational support to advanced technology solutions — from securing networks and recovering domains to deploying thousands of devices.\n\nThat broad skill set means we can support you from ground-level IT needs through high-level system integrations and security, ensuring efficient and secure operations.",
+            "bullets": [
+              {
+                "text": "CompTIA A+ certified"
+              },
+              {
+                "text": "Business and residential clients"
+              },
+              {
+                "text": "Security-first approach"
+              }
+            ],
+            "button": {
+              "label": "Work with us",
+              "href": "/contact/"
+            },
+            "image": "",
+            "panelIcon": "award",
+            "panelText": "A+ certified · 10+ years"
+          }
+        },
+        {
+          "id": "s-ab-list",
+          "type": "checklist",
+          "data": {
+            "bg": "alt",
+            "pad": "normal",
+            "columns": "2",
+            "eyebrow": "Experience",
+            "heading": "Skills & experience",
+            "intro": "",
+            "items": [
+              {
+                "text": "Configuring modern firewalls and securing networks"
+              },
+              {
+                "text": "Domain recovery and IT disaster recovery planning"
+              },
+              {
+                "text": "Large-scale Windows rollouts and upgrades"
+              },
+              {
+                "text": "Apple Business Manager and iPad deployments"
+              },
+              {
+                "text": "Deploying and managing 1,000+ Chromebooks"
+              },
+              {
+                "text": "Hardware and software troubleshooting"
+              },
+              {
+                "text": "Cybersecurity after-action assessments"
+              },
+              {
+                "text": "Switch, router and wireless configuration"
+              },
+              {
+                "text": "Server installation and maintenance"
+              },
+              {
+                "text": "Asset management and lifecycle control"
+              },
+              {
+                "text": "Security camera system installation"
+              },
+              {
+                "text": "Cabling project management for new construction"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-ab-stats",
+          "type": "stats",
+          "data": {
+            "bg": "dark",
+            "pad": "compact",
+            "items": [
+              {
+                "value": "10+",
+                "label": "Years in IT"
+              },
+              {
+                "value": "1,000+",
+                "label": "Devices deployed"
+              },
+              {
+                "value": "A+",
+                "label": "Certified"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "p-blog",
+      "title": "Blog",
+      "slug": "blog",
+      "showInNav": true,
+      "seoTitle": "Blog | Roe Technology Services",
+      "seoDescription": "Tech news, IT tips and short notes from Roe Technology Services.",
+      "sections": [
+        {
+          "id": "s-bl-hero",
+          "type": "hero",
+          "data": {
+            "bg": "dark",
+            "pad": "normal",
+            "layout": "center",
+            "eyebrow": "Blog",
+            "heading": "Tech news, tips & notes",
+            "text": "What's happening in the tech world, practical advice for your business and home, and a few things I like.",
+            "primary": {
+              "label": "",
+              "href": ""
+            },
+            "secondary": {
+              "label": "",
+              "href": ""
+            },
+            "image": "",
+            "cardTitle": "",
+            "highlights": []
+          }
+        },
+        {
+          "id": "s-bl-feed",
+          "type": "blogfeed",
+          "data": {
+            "bg": "light",
+            "pad": "normal",
+            "eyebrow": "",
+            "heading": "",
+            "intro": "",
+            "show": "all",
+            "limit": "all",
+            "layout": "grid",
+            "showTags": true,
+            "search": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "p-resources",
+      "title": "Resources",
+      "slug": "resources",
+      "showInNav": true,
+      "draft": true,
+      "seoTitle": "Free cybersecurity and tech resources | Roe Technology Services",
+      "seoDescription": "Trustworthy free guides and tools to protect your business and home online, from CISA, the FTC, NIST and more.",
+      "sections": [
+        {
+          "id": "s-res-hero",
+          "type": "hero",
+          "data": {
+            "bg": "dark",
+            "pad": "normal",
+            "layout": "center",
+            "eyebrow": "Resources",
+            "heading": "Free tools and guides we trust",
+            "text": "Practical, official resources to keep your business and your home safe online. Not sure where to start? Ask us.",
+            "primary": {
+              "label": "Ask a question",
+              "href": "/contact/"
+            },
+            "secondary": {
+              "label": "",
+              "href": ""
+            }
+          }
+        },
+        {
+          "id": "s-res-links",
+          "type": "resources",
+          "data": {
+            "bg": "light",
+            "pad": "normal",
+            "layout": "grid",
+            "eyebrow": "",
+            "heading": "Helpful links",
+            "intro": "Every link goes to the official source. We keep this list short on purpose.",
+            "items": [
+              {
+                "title": "Secure Our World",
+                "text": "Four easy ways to stay safe online: spot phishing, use strong passwords, turn on multi-factor authentication and keep software updated.",
+                "url": "https://www.cisa.gov/secure-our-world",
+                "category": "Stay safe online",
+                "icon": "shield-check"
+              },
+              {
+                "title": "Spot a phishing scam",
+                "text": "The FTC’s guide to recognizing and avoiding phishing emails and texts.",
+                "url": "https://consumer.ftc.gov/articles/how-recognize-avoid-phishing-scams",
+                "category": "Stay safe online",
+                "icon": "mail"
+              },
+              {
+                "title": "Have I Been Pwned",
+                "text": "Check whether your email address appeared in a known data breach.",
+                "url": "https://haveibeenpwned.com/",
+                "category": "Stay safe online",
+                "icon": "search"
+              },
+              {
+                "title": "Google Security Checkup",
+                "text": "A two-minute review of your Google account’s security, with tailored tips.",
+                "url": "https://myaccount.google.com/intro/security-checkup",
+                "category": "Stay safe online",
+                "icon": "lock"
+              },
+              {
+                "title": "Microsoft account security",
+                "text": "Change your password, add sign-in methods and review recent activity.",
+                "url": "https://account.microsoft.com/security",
+                "category": "Stay safe online",
+                "icon": "lock"
+              },
+              {
+                "title": "Passkeys",
+                "text": "What passkeys are and why they are safer than passwords, from the FIDO Alliance.",
+                "url": "https://fidoalliance.org/passkeys/",
+                "category": "Stay safe online",
+                "icon": "lock"
+              },
+              {
+                "title": "Tech support scams",
+                "text": "How to spot, avoid and report fake virus warnings and calls about your computer.",
+                "url": "https://consumer.ftc.gov/articles/how-spot-avoid-and-report-tech-support-scams",
+                "category": "Stay safe online",
+                "icon": "alert"
+              },
+              {
+                "title": "Cybersecurity for Small Business",
+                "text": "The FTC’s plain-language guides on the basics, ransomware, phishing, vendor security and more.",
+                "url": "https://www.ftc.gov/business-guidance/small-businesses/cybersecurity",
+                "category": "For small businesses",
+                "icon": "briefcase"
+              },
+              {
+                "title": "Small Business Cybersecurity Corner",
+                "text": "NIST’s free resources for understanding and reducing your cybersecurity risks.",
+                "url": "https://www.nist.gov/itl/smallbusinesscyber",
+                "category": "For small businesses",
+                "icon": "building"
+              },
+              {
+                "title": "Small and medium businesses",
+                "text": "CISA’s free information and tools for protecting your people, customers and data.",
+                "url": "https://www.cisa.gov/topics/small-and-medium-businesses",
+                "category": "For small businesses",
+                "icon": "shield"
+              },
+              {
+                "title": "#StopRansomware Guide",
+                "text": "Prevention best practices and a response checklist from CISA, the FBI and partners.",
+                "url": "https://www.cisa.gov/stopransomware/ransomware-guide",
+                "category": "For small businesses",
+                "icon": "database"
+              },
+              {
+                "title": "Report fraud to the FTC",
+                "text": "Report scams and bad business practices, even if you didn’t lose money.",
+                "url": "https://reportfraud.ftc.gov/",
+                "category": "If something goes wrong",
+                "icon": "megaphone"
+              },
+              {
+                "title": "FBI Internet Crime Complaint Center",
+                "text": "Report internet crime to the FBI.",
+                "url": "https://www.ic3.gov/",
+                "category": "If something goes wrong",
+                "icon": "alert"
+              },
+              {
+                "title": "IdentityTheft.gov",
+                "text": "Report identity theft and get a personal recovery plan.",
+                "url": "https://www.identitytheft.gov/",
+                "category": "If something goes wrong",
+                "icon": "users"
+              },
+              {
+                "title": "Hit by ransomware?",
+                "text": "CISA’s first steps if ransomware has locked your files.",
+                "url": "https://www.cisa.gov/stopransomware/ive-been-hit-ransomware",
+                "category": "If something goes wrong",
+                "icon": "zap"
+              },
+              {
+                "title": "AnnualCreditReport.com",
+                "text": "The official site for free credit reports from all three bureaus.",
+                "url": "https://www.annualcreditreport.com/",
+                "category": "If something goes wrong",
+                "icon": "clipboard"
+              },
+              {
+                "title": "Hacked email or social media",
+                "text": "The FTC’s steps to get back into a hacked account and lock it down.",
+                "url": "https://consumer.ftc.gov/articles/how-recover-your-hacked-email-or-social-media-account",
+                "category": "If something goes wrong",
+                "icon": "mail"
+              },
+              {
+                "title": "FCC National Broadband Map",
+                "text": "See which internet providers serve your address, with technologies and speeds.",
+                "url": "https://broadbandmap.fcc.gov/",
+                "category": "Internet and devices",
+                "icon": "wifi"
+              },
+              {
+                "title": "Windows 10 end of support",
+                "text": "Microsoft’s explanation of what the end of Windows 10 support means and your options.",
+                "url": "https://www.microsoft.com/en-us/windows/end-of-support",
+                "category": "Internet and devices",
+                "icon": "laptop"
+              },
+              {
+                "title": "Secure your home Wi-Fi",
+                "text": "The FTC’s steps for locking down your router: passwords, encryption, updates and a guest network.",
+                "url": "https://consumer.ftc.gov/articles/how-secure-your-home-wi-fi-network",
+                "category": "Internet and devices",
+                "icon": "wifi"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s-res-cta",
+          "type": "cta",
+          "data": {
+            "bg": "brand",
+            "pad": "normal",
+            "heading": "Want a second pair of eyes?",
+            "text": "We’ll walk through your setup with you and point out the quick wins.",
+            "primary": {
+              "label": "Book a free consultation",
+              "href": "/contact/"
+            },
+            "secondary": {
+              "label": "",
+              "href": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "p-contact",
+      "title": "Contact",
+      "slug": "contact",
+      "showInNav": true,
+      "seoTitle": "Contact | Roe Technology Services",
+      "seoDescription": "Get in touch with Roe Technology Services for a free IT consultation.",
+      "sections": [
+        {
+          "id": "s-ct-form",
+          "type": "contact",
+          "data": {
+            "bg": "alt",
+            "pad": "spacious",
+            "anchor": "contact",
+            "showForm": true,
+            "eyebrow": "Contact",
+            "heading": "Let's talk about your technology.",
+            "text": "Tell us what you're working on — a new network, a security concern, a device rollout or something that just isn't working. We'll get back to you within one business day.",
+            "hours": "Mon–Fri, 6pm–9pm\nSat–Sun, 10am–5pm",
+            "button": "Send message",
+            "sentText": "Your contact form has been submitted! We will get back to you as soon as possible!",
+            "showOn": "all"
+          }
+        }
+      ]
+    }
+  ],
+  "posts": [
+    {
+      "id": "post-techsupport",
+      "slug": "tech-support-scams",
+      "kind": "post",
+      "title": "That “call Microsoft now” pop-up is a scam",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Security, Tips",
+      "image": "/assets/library/topography.svg",
+      "summary": "Fake virus warnings and surprise calls about your computer are some of the most common scams around. How to spot them, and what to do if you already let someone in.",
+      "link": "",
+      "body": "It usually starts with a loud pop-up that freezes your screen, or a phone call from someone who says they’re from Microsoft, Apple, your bank or even the government. They say your computer is infected and they can fix it, if you let them connect or pay right away.\n\n## The rules that make these easy to spot\n- **Real tech companies don’t call, email or text you about a problem with your computer.**\n- **A pop-up that tells you to call a phone number is always a scam.** Real security warnings never ask you to call.\n- **Nobody legitimate asks to be paid with gift cards, wire transfers or cryptocurrency.**\n- **Never give a verification code** to someone who contacted you. It’s the key to your account.\n\n## What to do\n- Hang up on unexpected calls about your computer.\n- If a pop-up won’t close, restart the computer. On Windows you can also press Ctrl+Alt+Delete and open Task Manager to close the browser.\n- If you’re worried something really is wrong, update your security software and run a scan, then get help from a company you already know and trust.\n- To check a “subscription renewal” message, contact the company using a number you know is real, not the one in the message.\n\n## If you already let them in\n- [ ] Disconnect the computer from the internet.\n- [ ] Uninstall any remote access program they had you install, and run a full security scan.\n- [ ] Change your passwords from a different, clean device, starting with email and banking.\n- [ ] Call your bank or card company to stop or reverse any payments.\n- [ ] Report it at [ReportFraud.ftc.gov](https://reportfraud.ftc.gov/), including the phone number they told you to call.\n\n## Go deeper\n- FTC: [How To Spot, Avoid, and Report Tech Support Scams](https://consumer.ftc.gov/articles/how-spot-avoid-and-report-tech-support-scams)\n\nNot sure if a message is real? Ask us before you call anyone: [contact us](/contact/). We’re happy to take a look."
+    },
+    {
+      "id": "post-passkeys",
+      "slug": "passkeys-explained",
+      "kind": "post",
+      "title": "Passkeys explained: signing in without a password",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Security, Tips",
+      "image": "/assets/library/circuit.svg",
+      "summary": "Passkeys let you sign in with your fingerprint, face or PIN instead of a password, and they can’t be phished. Here’s how they work and how to start.",
+      "link": "",
+      "body": "A passkey replaces your password with your device’s own lock: your fingerprint, your face or your PIN. Google, Apple, Microsoft and many banks and shops now support them.\n\n## Why they’re safer\n- **Nothing to steal or reuse.** A passkey is a pair of keys. The secret half stays on your device; the website only keeps the public half, which is useless to a thief.\n- **They can’t be phished.** Each passkey only works on the real website or app it was made for, so a lookalike site can’t trick you into handing it over.\n- **Nothing to remember.** You unlock your phone or computer the way you already do.\n\n## Where passkeys live\nMost passkeys sync through your Apple, Google or Microsoft account or your password manager, so they follow you to a new phone. A hardware security key keeps one on a single physical device instead.\n\n## Set one up for your Google account\n1. Make sure your phone or computer has a screen lock.\n2. Go to your Google Account’s passkeys page and choose **Create a passkey**.\n3. Next time you sign in, confirm with your fingerprint, face or PIN.\n\nYour password and other sign-in methods still work as a backup, so you can try passkeys without risk.\n\n## Good to know\n- Start with the accounts that matter most: email, banking and your Apple, Google or Microsoft account.\n- Keep your account recovery options up to date in case you lose your device.\n- Not every site supports passkeys yet. For the rest, a password manager plus [multi-factor authentication](/blog/turn-on-multi-factor-authentication/) is still the way to go.\n\n## Go deeper\n- FIDO Alliance: [What are passkeys?](https://fidoalliance.org/passkeys/)\n- Google: [Sign in with a passkey instead of a password](https://support.google.com/accounts/answer/13548313?hl=en)\n\nWant help moving your business accounts to passkeys? [Let’s talk](/contact/)."
+    },
+    {
+      "id": "post-hacked",
+      "slug": "what-to-do-if-your-email-is-hacked",
+      "kind": "post",
+      "title": "Email or social media hacked? Do these things first",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Security, Tips",
+      "image": "/assets/library/hex-shield.svg",
+      "summary": "Locked out, or friends getting strange messages from you? Here is the order to work in, from getting back in to warning your contacts.",
+      "link": "",
+      "body": "Your email is the key to almost everything else: password resets for your bank, shopping and social media all go there. If it’s taken over, act quickly and in this order.\n\n## Signs someone got in\n- You can’t log in, or your password or recovery email changed without you.\n- You get an alert about a sign-in from a device or place you don’t recognize.\n- Friends tell you they got odd messages or requests for money from you.\n\n## 1. Clean your computer first\nUpdate your security software and run a full scan. If it finds anything, remove it and restart. Otherwise whoever got in may simply get in again.\n\n## 2. Get back in\nUse the provider’s own account recovery page (Google, Microsoft, Apple, Facebook and others all have one). Go to it directly, never through a link in an email or text.\n\n## 3. Lock the account down\n- [ ] Change the password to a long, unique one, ideally made by a password manager.\n- [ ] Sign out of all other devices from the security settings.\n- [ ] Turn on [multi-factor authentication](/blog/turn-on-multi-factor-authentication/), or set up a passkey.\n- [ ] Check the recovery email and phone number are yours.\n- [ ] Look for forwarding rules or filters you didn’t create. Attackers use them to keep reading your mail.\n- [ ] Change the password anywhere else you used the same one.\n\n## 4. Tell people\nLet friends, family and customers know, and ask them not to click links or send money because of a message from you.\n\n## 5. If personal information was misused\nReport it at [IdentityTheft.gov](https://www.identitytheft.gov/) for a step-by-step recovery plan, and check whether your address appears in known breaches at [Have I Been Pwned](https://haveibeenpwned.com/).\n\n## Go deeper\n- FTC: [How To Recover Your Hacked Email or Social Media Account](https://consumer.ftc.gov/articles/how-recover-your-hacked-email-or-social-media-account)\n- FTC: [What To Do if You Were Scammed](https://consumer.ftc.gov/articles/what-do-if-you-were-scammed)\n\nNeed a hand getting back in or cleaning up a computer? [Contact us](/contact/)."
+    },
+    {
+      "id": "post-router",
+      "slug": "secure-your-home-wifi-router",
+      "kind": "post",
+      "title": "Secure your home Wi-Fi router in 15 minutes",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Security, Networking, Tips",
+      "image": "/assets/library/waves.svg",
+      "summary": "Your router is the front door to every device in the house. Six settings make it much harder to get in.",
+      "link": "",
+      "body": "Most people set up their router once and never look at it again. That’s a problem: an old password or a forgotten setting can let a stranger onto your network, or into the router itself. Grab the sticker on the bottom of your router and work through this list. Tick each item as you go.\n\n## Log in to your router\nType the address printed on the router (often 192.168.0.1 or 192.168.1.1) into a browser, or use the router’s app. If the admin password is still the one on the sticker, that’s the first thing to change.\n\n## The checklist\n- [ ] **Change the admin password.** This is different from your Wi-Fi password: it controls the router’s settings. If someone gets into the admin side, they can change everything else.\n- [ ] **Use WPA3 or WPA2 encryption.** The FTC says routers that only offer WEP or the original WPA are outdated and not secure. If yours is one of them, it’s time for a new router.\n- [ ] **Give the network a new name.** Avoid your name, your address or the router brand.\n- [ ] **Update the firmware.** Check the router’s settings or the maker’s website, and turn on automatic updates if it has them.\n- [ ] **Turn off remote management, WPS and UPnP** unless you know you need them. Each one is a way in that most homes never use.\n- [ ] **Set up a guest network** for visitors and smart devices like cameras, TVs and doorbells, so they stay separate from your computers and phones.\n\n## When to replace the router\nIf it no longer gets updates, can’t do WPA2 or WPA3, or struggles with all your devices, a new router (or a mesh system for larger homes) is money well spent. See our post on [slow Wi-Fi fixes](/blog/slow-wifi-fixes/) too.\n\n## Go deeper\n- FTC: [How To Secure Your Home Wi-Fi Network](https://consumer.ftc.gov/articles/how-secure-your-home-wi-fi-network)\n- FTC: [Securing Your Internet-Connected Devices at Home](https://consumer.ftc.gov/articles/securing-your-internet-connected-devices-home)\n\nWant us to check your setup? [Book a free consultation](/contact/)."
+    },
+    {
+      "id": "post-wifi",
+      "slug": "slow-wifi-fixes",
+      "kind": "post",
+      "title": "Slow Wi-Fi? 7 fixes to try before you call",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Networking, Tips",
+      "image": "/assets/library/waves.svg",
+      "summary": "Most Wi-Fi problems have simple causes. Try these seven fixes, in this order, before replacing anything.",
+      "link": "",
+      "body": "Slow or patchy Wi-Fi is one of the most common problems we see. Before buying new equipment, work through these steps.\n\n## 1. Restart the modem and router\nUnplug both for 30 seconds, plug the modem in first, wait until it is online, then the router. It clears up more problems than you’d think.\n\n## 2. Move the router\nWi-Fi travels best through open air. Put the router up high, near the middle of the space, and away from metal shelves, fish tanks and microwaves.\n\n## 3. Check the speed you’re paying for\nRun a speed test next to the router, connected by cable if you can. If it is far below your plan, the problem is the internet connection, not your Wi-Fi. The [FCC National Broadband Map](https://broadbandmap.fcc.gov/) shows which providers and speeds are available at your address.\n\n## 4. Update the router\nRouter updates fix bugs and security holes. Many routers can update automatically; turn that on.\n\n## 5. Use the right band\nNewer devices do better on 5 GHz (faster, shorter range); 2.4 GHz reaches further but is slower and more crowded.\n\n## 6. Plug in what doesn’t move\nDesktop computers, TVs and printers are faster and more reliable on a network cable, and they free up Wi-Fi for phones and laptops.\n\n## 7. Add coverage the right way\nIf some rooms are still weak, a mesh system or a wired access point usually works much better than a plug-in extender.\n\nStill stuck? [We’ll take a look](/contact/), for homes and businesses alike."
+    },
+    {
+      "id": "post-checklist",
+      "slug": "small-business-cybersecurity-checklist",
+      "kind": "post",
+      "title": "Small business cybersecurity checklist: 10 things to do this month",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Security, Small business",
+      "image": "/assets/library/network-mesh.svg",
+      "summary": "You don’t need a big budget to be much safer. Ten practical steps, most of them free, that close the gaps attackers use most.",
+      "link": "",
+      "body": "Most attacks on small businesses aren’t clever. They take advantage of the basics: reused passwords, missing updates and people in a hurry. Work through this list this month. Tick each item as you go; your ticks are saved on this device.\n\n## Accounts and passwords\n- [ ] **Turn on multi-factor authentication** for email, banking, payroll and admin accounts.\n- [ ] **Use a password manager** so every account has a long, unique password. CISA suggests at least 16 random characters.\n- [ ] **Remove old accounts** for people who have left, and review who has admin rights.\n\n## Devices and software\n- [ ] **Turn on automatic updates** for computers, phones, routers and apps.\n- [ ] **Replace computers that no longer get security updates**, such as anything still on Windows 10.\n- [ ] **Keep a simple list of your devices** so you know what needs protecting.\n\n## Data\n- [ ] **Back up with the 3-2-1 rule** and keep one copy offline.\n- [ ] **Separate guest Wi-Fi** from the network your business computers use.\n\n## People\n- [ ] **Talk about phishing.** Agree that nobody pays an invoice or changes bank details because of an email alone; call to confirm.\n- [ ] **Know what to do if something goes wrong:** who to call, and where to report it, such as [ReportFraud.ftc.gov](https://reportfraud.ftc.gov/) or the FBI at [ic3.gov](https://www.ic3.gov/).\n\n## Free official guides\n- FTC: [Cybersecurity for Small Business](https://www.ftc.gov/business-guidance/small-businesses/cybersecurity)\n- NIST: [Small Business Cybersecurity Corner](https://www.nist.gov/itl/smallbusinesscyber)\n- CISA: [Secure Our World](https://www.cisa.gov/secure-our-world)\n\nWant help working through the list? [Book a free consultation](/contact/)."
+    },
+    {
+      "id": "post-backups",
+      "slug": "the-3-2-1-backup-rule",
+      "kind": "post",
+      "title": "The 3-2-1 backup rule, explained simply",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Backups, Security",
+      "image": "/assets/library/server-grid.svg",
+      "summary": "One copy of your files is no copy. The 3-2-1 rule is an easy way to make sure a broken laptop or ransomware doesn’t take your work with it.",
+      "link": "",
+      "body": "Hard drives fail, laptops get lost and ransomware locks files. A good backup turns any of those into an inconvenience instead of a disaster.\n\n## The rule\n- **3 copies** of your important files: the original plus two backups.\n- **2 different kinds of storage**, for example your computer and an external drive or a cloud service.\n- **1 copy somewhere else**, away from your office or home, such as a cloud backup.\n\n## Keep one copy offline\nRansomware can encrypt anything it can reach, including a backup drive that is always plugged in. CISA recommends keeping **offline, encrypted backups** of important data and testing them regularly.\n\n## Test your backups\nA backup you’ve never restored from is a guess. A few times a year, try restoring a file or two and make sure it opens.\n\n## A simple setup that works\n1. An automatic cloud backup of your computers or your shared files.\n2. An external drive that you back up to weekly and then unplug.\n3. A reminder on your calendar to test a restore every few months.\n\nWant it set up and checked for you? [We can help](/contact/).\n\nSource: CISA, [#StopRansomware Guide](https://www.cisa.gov/stopransomware/ransomware-guide)."
+    },
+    {
+      "id": "post-windows-10",
+      "slug": "windows-10-support-has-ended",
+      "kind": "post",
+      "title": "Windows 10 support has ended: what it means for your PCs",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Windows, Small business",
+      "image": "/assets/library/circuit.svg",
+      "summary": "Microsoft stopped updating Windows 10 on October 14, 2025. Your computers still work, but they no longer get security fixes. Here are your options.",
+      "link": "",
+      "body": "Microsoft ended support for Windows 10 on **October 14, 2025**. If your business or home still has Windows 10 computers, here’s what that means.\n\n## What changed\n- **No more security updates.** New problems found in Windows 10 are no longer fixed, so the computer becomes easier to attack over time.\n- **No more technical support** from Microsoft.\n- **Your computer still works.** Nothing switches off. The risk grows quietly.\n\nMicrosoft 365 apps keep receiving security updates on Windows 10 for a while longer (until October 10, 2028), but the operating system underneath them doesn’t.\n\n## Your options\n1. **Upgrade to Windows 11** if the computer meets Microsoft’s requirements. It’s a free upgrade for eligible PCs.\n2. **Replace the computer** if it can’t run Windows 11. This is often the right time for older machines anyway.\n3. **Extended Security Updates (ESU).** Microsoft offers a paid program that adds security updates for a limited time. It buys time, but it isn’t a long-term plan.\n\n## How we can help\nWe can check which of your computers can upgrade, move your files and settings safely, and plan replacements so nobody loses a day of work. [Get in touch](/contact/) for a quick review.\n\nSource: Microsoft, [End of support for Windows 10](https://www.microsoft.com/en-us/windows/end-of-support)."
+    },
+    {
+      "id": "post-phishing",
+      "slug": "how-to-spot-a-phishing-email",
+      "kind": "post",
+      "title": "How to spot a phishing email (and what to do if you clicked)",
+      "date": "2026-10-16",
+      "published": false,
+      "tags": "Security, Tips",
+      "image": "/assets/library/hex-shield.svg",
+      "summary": "Phishing messages try to rush you into clicking. Here are the warning signs, and the exact steps to take if you already did.",
+      "link": "",
+      "body": "Phishing emails and texts pretend to be someone you trust, like your bank, a delivery company or even a coworker, to get you to click a link, open an attachment or share a password.\n\n## The warning signs\n- **Urgency or a threat.** “Your account will be closed today.” Scammers want you to act before you think.\n- **A request for personal or payment details.** Real companies don’t ask you to confirm passwords or card numbers by email.\n- **An unexpected attachment or link.** Even when it looks like it comes from someone you know.\n- **Unusual ways to pay.** Anyone who insists on gift cards, wire transfers, a payment app or cryptocurrency is a scammer.\n\n## What to do instead\n1. Don’t click. Go to the company’s website or call a number you already know, not the one in the message.\n2. Turn on multi-factor authentication for your email and banking, so a stolen password alone isn’t enough.\n3. Keep your software and phone updated, and let your email’s spam filter do its job.\n\n## If you already clicked\n1. Change the password for that account, and anywhere else you used the same password.\n2. If you downloaded something, run a security scan, or [ask us](/contact/) to check the computer.\n3. If you shared personal or financial information, visit [IdentityTheft.gov](https://www.identitytheft.gov/) for a recovery plan.\n\n## Report it\n- Forward phishing emails to reportphishing@apwg.org.\n- Forward scam texts to 7726 (SPAM).\n- Report the scam to the FTC at [ReportFraud.ftc.gov](https://reportfraud.ftc.gov/).\n\nSource: the FTC’s guide, [How to recognize and avoid phishing scams](https://consumer.ftc.gov/articles/how-recognize-avoid-phishing-scams)."
+    },
+    {
+      "id": "post-network-signs",
+      "kind": "post",
+      "title": "5 signs your small business network needs an upgrade",
+      "slug": "5-signs-your-network-needs-an-upgrade",
+      "date": "2026-10-01",
+      "published": true,
+      "tags": "Networking, Small business",
+      "image": "assets/library/network-mesh.svg",
+      "summary": "Slow Wi-Fi, dropped video calls and mystery outages usually aren't bad luck. Here's how to tell when it's time to modernize.",
+      "body": "Most networks aren't designed. They grow one switch, one extender and one \"temporary\" cable at a time. Eventually that adds up to slowdowns and outages nobody can explain.\n\n## 1. Wi-Fi gets worse when everyone is in the office\nIf things are fine at 7am and crawl by 10am, your access points are overloaded or badly placed. Modern business-grade Wi-Fi is built for lots of devices at once.\n\n## 2. Video calls freeze or drop\nCalls are the first thing to suffer when bandwidth is shared poorly. Quality-of-service settings and a properly sized internet connection make a big difference.\n\n## 3. Your firewall is older than your phone\nOlder firewalls stop receiving security updates and often can't keep up with today's internet speeds. If yours is past end of life, it's a security risk as well as a bottleneck.\n\n## 4. Nobody knows where the cables go\nUnlabeled cables and a tangled closet make every problem take longer to fix.\n\n## 5. Guests and staff share the same network\nVisitors and personal devices should be kept separate from the computers that run your business.\n\n> A little planning now prevents a lot of downtime later.\n\nIf any of these sound familiar, [get in touch](/contact/) for a free network review.",
+      "link": ""
+    },
+    {
+      "id": "post-mfa",
+      "kind": "post",
+      "title": "Turn on multi-factor authentication today",
+      "slug": "turn-on-multi-factor-authentication",
+      "date": "2026-09-24",
+      "published": true,
+      "tags": "Security, Tips",
+      "image": "assets/library/hex-shield.svg",
+      "summary": "Stolen passwords are behind a huge share of account break-ins. Multi-factor authentication is the simplest, cheapest fix.",
+      "body": "Passwords get reused, guessed and leaked. **Multi-factor authentication (MFA)** adds a second check, like a code on your phone, so a stolen password alone isn't enough.\n\n## Where to turn it on first\n- Your email account (it can reset everything else)\n- Banking and payroll\n- Microsoft 365 or Google Workspace admin accounts\n- Your domain registrar and website host\n\n## Which method to choose\n1. An authenticator app or security key is the strongest everyday option.\n2. Text-message codes are better than nothing, but easier to intercept.\n\nIt takes about ten minutes per account, and it's one of the best security investments a small business can make.",
+      "link": ""
+    },
+    {
+      "id": "blurb-label-cables",
+      "kind": "blurb",
+      "title": "",
+      "slug": "note-label-every-cable",
+      "date": "2026-09-30",
+      "published": true,
+      "tags": "Tips",
+      "image": "",
+      "summary": "",
+      "body": "**Quick tip:** label both ends of every network cable during an install. It costs a few minutes today and saves hours the next time something breaks.",
+      "link": ""
+    },
+    {
+      "id": "blurb-password-managers",
+      "kind": "blurb",
+      "title": "Something I like: password managers",
+      "slug": "note-password-managers",
+      "date": "2026-09-20",
+      "published": true,
+      "tags": "Security, Tools",
+      "image": "",
+      "summary": "",
+      "body": "A good password manager means you only remember one strong password, and every other account gets a unique one. It's the single easiest upgrade most people can make.",
+      "link": ""
+    }
+  ],
+  "media": [],
+  "saved": [],
+  "redirects": []
+}

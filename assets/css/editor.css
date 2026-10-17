@@ -552,3 +552,8 @@ input[type=range] { width: 100%; accent-color: var(--e-accent); }
 .layer--d2 { margin-left: 32px; }
 .layer--d3 { margin-left: 46px; }
 .layer--d4 { margin-left: 60px; }
+.ed-modal__card:has(.el-picker) { width: min(780px, 100%); }
+.el-picker .el-tiles { grid-template-columns: repeat(4, 1fr); margin-bottom: 18px; }
+.el-picker .el-tile { padding: 14px 8px; }
+.el-picker .p-sub { margin: 4px 0 10px; }
+.el-add__more { border-style: dashed; color: var(--e-muted); }
