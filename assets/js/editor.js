@@ -582,7 +582,44 @@ function insertIndex() {
 }
 
 function addSection(type, at = null) {
-  insertSection(newSection(type, type === 'hero' && state.page > 0 ? { layout: 'center', pad: 'normal' } : {}), `${BLOCKS[type].label} added`, at);
+  let sec = newSection(type, type === 'hero' && state.page > 0 ? { layout: 'center', pad: 'normal' } : {});
+  // “Add as fully editable”: the premade section arrives built from rows, columns and elements.
+  if (CONVERT && addEditable() && CONVERT.can(sec)) sec = CONVERT.one(sec);
+  insertSection(sec, `${BLOCKS[type].label} added`, at);
+}
+
+// Premade sections rebuilt from layout pieces that look the same (site feature "convert-layout").
+const CONVERT = has('convert-layout') && theme.convertSection && theme.canConvert ? { one: theme.convertSection, can: theme.canConvert } : null;
+const EDITABLE_KEY = 'add-editable';
+const addEditable = () => { try { return localStorage.getItem(EDITABLE_KEY) === '1'; } catch { return false; } };
+
+// Converts the sections of page `pageIndex` (all, or only `ids`); returns how many changed.
+function convertSections(pageIndex, ids = null) {
+  const list = state.doc.pages[pageIndex]?.sections || [];
+  let n = 0;
+  list.forEach((sec, i) => {
+    if ((ids && !ids.includes(sec.id)) || !CONVERT.can(sec)) return;
+    list[i] = CONVERT.one(sec);
+    n += 1;
+  });
+  if (!n) return 0;
+  state.node = null;
+  state.el = null;
+  commit();
+  if (pageIndex === state.page) renderCanvas();
+  renderInspector();
+  renderPanel();
+  return n;
+}
+
+function makeEditable1(id) {
+  const label = BLOCKS[findSection(id)?.type]?.label || 'Section';
+  if (convertSections(state.page, [id])) toast(`${label} is now fully editable: click any part of it.`, { action: 'Undo', onAction: undo });
+}
+
+function makePageEditable(pageIndex) {
+  const n = convertSections(pageIndex);
+  toast(n ? `${n} section${n === 1 ? '' : 's'} on “${state.doc.pages[pageIndex].title}” ${n === 1 ? 'is' : 'are'} now fully editable.` : 'Everything on this page is already fully editable.', n ? { action: 'Undo', onAction: undo } : {});
 }
 
 // Inserts a copy of a section at position `at`, or after the selection (or at the end).
@@ -1398,6 +1435,12 @@ function renderInspector() {
     if (state.insTab === 'style') { styleTab(box, sec); box.scrollTop = scroll; return; }
   }
   if (isLayout(sec) && currentNode(sec)) { nodeContent(box, sec, state.node); box.scrollTop = scroll; return; }
+  if (CONVERT?.can(sec)) {
+    box.append(el('div', { class: 'convert-box' },
+      el('strong', {}, 'Want to change more than these settings?'),
+      el('p', {}, 'Rebuild this section from rows, columns and elements. It looks the same, and then every heading, button, card and image can be moved, restyled or removed, and you can add your own.'),
+      el('button', { type: 'button', class: 'ed-btn ed-btn--sm ed-btn--primary', 'data-make-editable': '', onclick: () => makeEditable1(sec.id) }, ico('grid'), 'Make fully editable')));
+  }
   // A name only the editor shows, so sections are easy to tell apart (“Spring promo”).
   box.append(el('div', { class: 'f sec-name' }, el('label', {}, 'Section name ', el('small', {}, '(only you see this)')),
     el('input', { class: 'in', 'data-path': '__label', value: sec.label || '', placeholder: block.label, maxlength: 60, oninput: (e) => {
@@ -1915,6 +1958,10 @@ function panelAdd(box) {
           state.doc.saved = state.doc.saved.filter((x) => x.id !== sv.id); commit(); renderPanel();
         } }, ico('trash'))))));
   }
+  if (CONVERT) {
+    body.append(el('label', { class: 'switch add-editable' }, el('span', {}, 'Add as fully editable', el('small', {}, 'Built from rows, columns and elements, so every part can be changed')),
+      el('input', { type: 'checkbox', checked: addEditable(), onchange: (e) => { try { localStorage.setItem(EDITABLE_KEY, e.target.checked ? '1' : '0'); } catch { /* storage blocked */ } } })));
+  }
   body.append(...blockCards((type) => addSection(type)));
   box.append(body);
 }
@@ -2100,6 +2147,7 @@ function panelPages(box) {
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', disabled: i === 0 || i === state.doc.pages.length - 1, title: 'Move down', onclick: () => movePage(i, 1) }, ico('chevron-down')),
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => duplicatePage(i) }, ico('copy'), 'Duplicate'),
           el('button', { type: 'button', class: 'ed-btn ed-btn--sm', title: 'Start new pages from this one', onclick: () => saveAsTemplate(i) }, ico('bookmark'), 'Save as template'),
+          CONVERT && (p.sections || []).some((x) => CONVERT.can(x)) ? el('button', { type: 'button', class: 'ed-btn ed-btn--sm', title: 'Rebuild every premade section on this page from rows, columns and elements (looks the same)', onclick: () => makePageEditable(i) }, ico('grid'), 'Make fully editable') : null,
           i > 0 ? el('button', { type: 'button', class: 'ed-btn ed-btn--sm ed-btn--danger', onclick: () => deletePage(i) }, ico('trash'), 'Delete') : null));
       item.append(b);
     }
@@ -2609,6 +2657,7 @@ function panelRedirects(body) {
 // feature: shown only when the connected site supports it.
 const WHATS_NEW = [
   { v: 3, feature: 'layout-builder', title: 'Design your own sections', text: 'Add a “Layout” section (Add → Basic) and build it from rows and columns. Drag elements between columns, drag the line between columns to resize them, and add boxes for cards.', show: () => setTab('add') },
+  { v: 3, feature: 'convert-layout', title: 'Make any section fully editable', text: 'Select a premade section and press “Make fully editable” (or do a whole page from Pages). It looks the same, and every heading, button, card and image can then be moved, restyled or removed.' },
   { v: 3, feature: 'layout-widgets', title: 'Forms, FAQ and galleries anywhere', text: 'In a layout, “Add element” → More… puts a contact or quote form, FAQ, photo gallery, blog posts, booking calendar, map and more into any column.' },
   { v: 3, feature: 'rich-text', title: 'A real text editor', text: 'In a layout, click text and type. Select words to make them bold, add links, lists, headings, colours and sizes from the toolbar that appears.' },
   { v: 3, feature: 'section-styles', title: 'Style anything', text: 'The new Style tab changes the colours, spacing, borders, shadows and fonts of any section, and of every row, column and element in a layout. Switch it to Phones to change something only on phones.' },
@@ -3346,6 +3395,7 @@ function paletteItems() {
     ['Redo', 'redo', redo, ''],
     ['Phone-size preview', 'smartphone', () => setDevice('mobile'), 'mobile device'],
     ['Computer-size preview', 'monitor', () => setDevice('desktop'), 'desktop device'],
+    ...(CONVERT ? [['Make this page fully editable', 'grid', () => makePageEditable(state.page), 'convert layout rows columns elements']] : []),
     ['Download a backup', 'download', downloadJSON, 'save json'],
     ['Open the live site', 'external', () => window.open(`${SITE}/`, '_blank', 'noopener'), 'view website'],
   ];
