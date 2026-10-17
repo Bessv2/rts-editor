@@ -35,6 +35,26 @@ editor.roetechnologyservices.com          roetechnologyservices.com
   search engines", redirects) appear in the editor only when the site's `theme-api.js` lists them
   in `FEATURES`, so the editor keeps working with an older site.
 
+### Designing your own sections
+
+Add a **Layout** section (Add → Basic) to design a section from scratch:
+
+- **Rows and columns.** A layout is made of rows; each row has columns side by side (they stack
+  on phones). Pick a column layout for a new row, drag the line between two columns to resize
+  them, and add, move or remove columns with the toolbar on the page.
+- **Elements.** Use **Add element** in a column for headings, text, images, buttons, icons, boxes
+  (cards or panels that hold elements of their own) and more. Drag an element by its handle into
+  another column, box or layout section.
+- **Selecting.** Click the innermost piece you want. The breadcrumb at the top of the panel
+  (Layout › Row 1 › Column 2 › Heading) and Escape go back up; Layers shows the whole tree.
+- **Text toolbar.** Click text in a layout and type. Select words for paragraph or heading,
+  bold, italic, underline, strike-through, links (Ctrl+K), lists, alignment, colour and size.
+  Pasted text keeps its formatting but not the fonts and colours of where it came from.
+- **Style tab.** Every section (including the premade ones) and every row, column and element
+  has a Style tab: spacing, size, background colour, gradient or image, border, corners, shadow,
+  text colour, font, size and alignment, and hiding on computers or phones. Switch it to
+  **Phones** to change something only on phones; the preview switches with it.
+
 ### Checkup
 
 The **Checkup** tab runs the site's own checks (`audit.js` in the site repo) as you work. It finds
@@ -233,6 +253,8 @@ SITE_DIR=site npm run test:e2e
 | --- | --- |
 | `index.html`, `assets/js/editor.js` | The editor |
 | `assets/js/config.js`, `assets/js/site-config.js` | Connected site and theme loading |
+| `assets/js/layout-ops.js` | Layout sections: moving, adding and resizing rows, columns and elements |
+| `assets/js/richtext.js` | The text toolbar for rich text on the canvas |
 | `assets/js/publish.js` | GitHub: publish in one commit, version history, cloud drafts |
 | `assets/js/store.js` | Drafts and saved versions in the browser (IndexedDB) |
 | `preview.html`, `assets/js/preview.js` | Preview of unpublished drafts |

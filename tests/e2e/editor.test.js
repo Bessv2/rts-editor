@@ -447,7 +447,8 @@ test('section names, search and share previews, search engine codes and schedule
   await p.click('.ed-rail button[data-tab="layers"]');
   await p.locator('.layer.is-sel strong', { hasText: 'What we offer' }).waitFor();
 
-  // Show a section on phones only: the editor marks it
+  // Show a section on phones only: the editor marks it (with styles, the setting is in the Style tab)
+  if (theme.FEATURES.includes('section-styles')) await p.click('#inspector [data-ins-tab="style"]');
   await p.locator('#inspector .f', { hasText: 'Show on' }).locator('button', { hasText: 'Phones' }).click();
   await canvas.locator('.blk-services.show-on--mobile').first().waitFor();
 
@@ -969,7 +970,10 @@ test('what’s new: a note on first visit, the list in Help, then quiet', async 
   const p = await newPage(ctx, { news: true });
   await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
   await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
-  const note = p.locator('.toast', { hasText: 'New in the editor: jump to anything' });
+  // The note names the newest feature this site supports.
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  const newest = theme.FEATURES?.includes('layout-builder') ? 'design your own sections' : 'jump to anything';
+  const note = p.locator('.toast', { hasText: `New in the editor: ${newest}` });
   await note.waitFor();
   assert.ok(await p.locator('.ed-rail [data-tab="help"] .ed-rail__dot').isVisible());
   await note.locator('button', { hasText: 'See what’s new' }).click();
@@ -1156,4 +1160,178 @@ test('the editor refuses to run inside another site', async () => {
   const frame = p.frames()[1];
   await frame.waitForFunction(() => document.body.innerText.includes('only be opened directly'));
   await p.close();
+});
+
+// The draft the editor saved in this browser (IndexedDB).
+const savedDraft = (p) => p.evaluate(() => new Promise((res) => {
+  const q = indexedDB.open('rts-editor', 1);
+  q.onsuccess = () => { const g = q.result.transaction('kv').objectStore('kv').get('draft'); g.onsuccess = () => res(JSON.parse(g.result?.json || 'null')); };
+}));
+const layoutData = async (p) => (await savedDraft(p)).pages[0].sections.find((s) => s.type === 'layout').data;
+
+// Opens a group in the Style tab (groups stay open from one selection to the next).
+async function openStyleGroup(p, id) {
+  const g = p.locator(`#inspector details[data-group="${id}"]`);
+  if (!(await g.evaluate((n) => n.open))) await g.locator(':scope > summary').click();
+}
+
+// A real drag with small mouse steps (both points on screen).
+async function mouseDrag(p, from, to, { x = 20, y = 10 } = {}) {
+  const a = await from.boundingBox();
+  const b = await to.boundingBox();
+  const ax = a.x + a.width / 2; const ay = a.y + a.height / 2; const bx = b.x + x; const by = b.y + y;
+  await p.mouse.move(ax, ay);
+  await p.mouse.down();
+  for (let i = 1; i <= 12; i++) await p.mouse.move(ax + ((bx - ax) * i) / 12, ay + ((by - ay) * i) / 12);
+  await p.mouse.up();
+}
+
+test('layouts: rows, columns and elements, dragging, resizing and layers', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('layout-builder')) { t.skip('the site does not have layout sections yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .block-card', { hasText: 'Layout' }).first().click();
+  const sec = canvas.locator('.blk-layout').first();
+  await sec.locator('[data-node="rows.0"]').waitFor();
+
+  // Clicking picks the innermost piece; the breadcrumb leads back up
+  await sec.locator('.lx--heading').click();
+  assert.equal(await p.locator('#inspector .crumbs .is-on').innerText(), 'Heading');
+  await sec.locator('.lx--heading.is-node-sel .ed-node-tools').waitFor();
+  await p.keyboard.press('Escape');
+  await p.keyboard.press('Escape');
+  assert.equal(await p.locator('#inspector .crumbs .is-on').innerText(), 'Column 1');
+  await p.locator('#inspector .crumbs button', { hasText: 'Row 1' }).click();
+  await sec.locator('[data-node="rows.0"].is-node-sel').waitFor();
+
+  // A new row of three columns, and a box added to an empty column
+  await sec.locator('[data-node="rows.0"] .ed-row-add').click();
+  await p.locator('.row-preset', { hasText: '3 equal' }).click();
+  await sec.locator('[data-node="rows.1.cols.2"]').waitFor();
+  await sec.locator('[data-add-el="rows.1.cols.1"]').click();
+  await p.locator('.el-tile[data-type="box"]').click();
+  await sec.locator('[data-node="rows.1.cols.1.els.0"].lx--box').waitFor();
+  assert.deepEqual((await layoutData(p)).rows[1].cols.map((c) => c.span), [4, 4, 4]);
+
+  // Drag the button into the first new column
+  await sec.locator('[data-node="rows.0.cols.0.els.2"]').click({ position: { x: 3, y: 3 } });
+  await mouseDrag(p, sec.locator('.ed-node-tools .ed-grip'), sec.locator('[data-add-el="rows.1.cols.0"]'), { x: 40, y: 20 });
+  await sec.locator('[data-node="rows.1.cols.0.els.0"].lx--button').waitFor();
+  let d = await layoutData(p);
+  assert.deepEqual(d.rows[0].cols[0].els.map((e) => e.type), ['heading', 'text']);
+  assert.equal(await p.locator('#inspector .crumbs .is-on').innerText(), 'Button', 'the moved element stays selected');
+
+  // Resize the first row's columns by dragging the line between them
+  await sec.locator('[data-node="rows.0.cols.0"]').click({ position: { x: 3, y: 3 } });
+  await sec.locator('[data-node="rows.0.cols.0.els.0"]').evaluate((n) => n.scrollIntoView({ block: 'center' }));
+  const handle = sec.locator('[data-node="rows.0"] > .ed-col-handle');
+  const hb = await handle.boundingBox();
+  await p.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+  await p.mouse.down();
+  for (let i = 1; i <= 8; i++) await p.mouse.move(hb.x + hb.width / 2 + i * 18, hb.y + hb.height / 2);
+  await p.mouse.up();
+  await sec.locator('[data-node="rows.0.cols.0"].lay__col--s8').waitFor();
+  assert.deepEqual((await layoutData(p)).rows[0].cols.map((c) => c.span), [8, 4]);
+
+  // Delete removes the selected column (its width goes to its neighbour); undo brings it back
+  await sec.locator('[data-node="rows.1.cols.2"]').click({ position: { x: 5, y: 5 } });
+  await p.keyboard.press('Delete');
+  await p.locator('.toast', { hasText: 'Column 3 removed' }).waitFor();
+  assert.deepEqual((await layoutData(p)).rows[1].cols.map((c) => c.span), [4, 8]);
+  await p.keyboard.press('Control+z');
+  await sec.locator('[data-node="rows.1.cols.2"]').waitFor();
+
+  // Layers shows the whole tree; picking a piece there selects it
+  await p.click('.ed-rail button[data-tab="layers"]');
+  await p.locator('[data-layer-node="rows.1.cols.1.els.0.els.0"]').click();
+  assert.equal(await p.locator('#inspector .crumbs .is-on').innerText(), 'Heading');
+  await sec.locator('[data-node="rows.1.cols.1.els.0.els.0"].is-node-sel').waitFor();
+
+  // The built page has the layout
+  const built = theme.buildSite(await savedDraft(p), { origin: 'https://example.com' }).files.get('index.html');
+  assert.match(built, /<div class="lay__col lay__col--s8 lay__col--m12 n-0-0">/);
+  assert.match(built, /<style id="section-styles">/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('styles for any piece (with phone changes) and the rich text toolbar', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('layout-builder')) { t.skip('the site does not have layout sections yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .block-card', { hasText: 'Layout' }).first().click();
+  const sec = canvas.locator('.blk-layout').first();
+  await sec.locator('[data-node="rows.0"]').waitFor();
+
+  // Style an element: a theme colour and padding for every screen, less padding on phones
+  await sec.locator('.lx--heading').click();
+  await p.click('#inspector [data-ins-tab="style"]');
+  await openStyleGroup(p, 'background');
+  await p.click('#inspector [data-style="bg"] .st__sw[title="Brand"]');
+  await openStyleGroup(p, 'spacing');
+  await p.fill('#inspector [data-style="pt"] input', '24');
+  await p.click('#inspector [data-screen="mobile"]');
+  assert.equal(await p.locator('#frame-wrap').getAttribute('data-device'), 'mobile', 'the preview switches to a phone');
+  assert.equal(await p.locator('#inspector [data-style="pt"] input').getAttribute('placeholder'), '24', 'phones show the value for all screens');
+  await p.fill('#inspector [data-style="pt"] input', '8');
+  await p.click('#inspector [data-screen="desktop"]');
+  await p.waitForTimeout(700);
+  const el = (await layoutData(p)).rows[0].cols[0].els[0];
+  assert.deepEqual(el.design, { bg: 'primary', pt: 24 });
+  assert.deepEqual(el.mobile, { pt: 8 });
+  const css = await sec.locator('style[data-s]').textContent();
+  assert.match(css, /\.n-0-0-0\{padding-top:24px;background-color:var\(--c-primary\)/);
+  assert.match(css, /@media \(max-width: 759\.98px\)\{[^@]*\.n-0-0-0\{padding-top:8px/);
+  // Reset clears a group
+  await p.locator('#inspector details[data-group="spacing"] .st-reset').click();
+  assert.equal((await savedDraft(p)).pages[0].sections.find((s) => s.type === 'layout').data.rows[0].cols[0].els[0].design.pt, undefined);
+
+  // Classic sections have the same Style tab
+  await canvas.locator('.blk-services').first().click();
+  await openStyleGroup(p, 'background');
+  await p.click('#inspector [data-style="bg"] .st__sw[title="Dark"]');
+  await canvas.locator('.blk-services.x-s-services style[data-s]').first().waitFor({ state: 'attached' });
+
+  // Rich text: select a word, make it bold and brand coloured, then link another
+  await p.click('#inspector [data-ins-tab="content"]');
+  const rich = sec.locator('.lx-rich').first();
+  await rich.click();
+  const selectWords = (from, to) => rich.evaluate((n, [a, b]) => {
+    const t = n.querySelector('p').lastChild.nodeType === 3 ? n.querySelector('p').lastChild : n.querySelector('p').firstChild;
+    const r = n.ownerDocument.createRange(); r.setStart(t, a); r.setEnd(t, b);
+    const s = n.ownerDocument.getSelection(); s.removeAllRanges(); s.addRange(r);
+  }, [from, to]);
+  await rich.evaluate((n) => { const r = n.ownerDocument.createRange(); const t = n.querySelector('p').firstChild; r.setStart(t, 0); r.setEnd(t, 3); const s = n.ownerDocument.getSelection(); s.removeAllRanges(); s.addRange(r); });
+  const bar = canvas.locator('.ed-rt');
+  await bar.waitFor();
+  await bar.locator('[data-rt="bold"]').click();
+  await bar.locator('[data-rt="menu:color"]').click();
+  await bar.locator('[data-rt="color:var(--c-primary)"]').click();
+  await selectWords(5, 9);
+  await bar.locator('[data-rt="link"]').click();
+  await p.fill('#modal input[aria-label="Web address"]', 'example.com');
+  await p.press('#modal input[aria-label="Web address"]', 'Enter');
+  await p.waitForTimeout(800);
+  const html = (await layoutData(p)).rows[0].cols[0].els[1].html;
+  assert.match(html, /^<p><strong><span style="color:var\(--c-primary\)">Add<\/span><\/strong> /);
+  assert.match(html, /<a href="https:\/\/example\.com">[^<]+<\/a>/);
+  // Typing never stores anything unsafe
+  await rich.evaluate((n) => { n.insertAdjacentHTML('beforeend', '<p onclick="x()">Hi<script>alert(1)</script><img src=x onerror=alert(1)></p>'); n.dispatchEvent(new Event('input', { bubbles: true })); });
+  await p.waitForTimeout(700);
+  assert.match((await layoutData(p)).rows[0].cols[0].els[1].html, /<p>Hi<\/p>$/);
+  // (the page's security policy refuses to run the injected handler, which is logged)
+  assert.deepEqual(p.errors.filter((m) => !/inline event handler/.test(m)), []);
+  await ctx.close();
 });
