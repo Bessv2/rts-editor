@@ -1335,3 +1335,45 @@ test('styles for any piece (with phone changes) and the rich text toolbar', asyn
   assert.deepEqual(p.errors.filter((m) => !/inline event handler/.test(m)), []);
   await ctx.close();
 });
+
+test('widgets: premade sections inside a layout column', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('layout-widgets')) { t.skip('the site does not have widgets yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .block-card', { hasText: 'Layout' }).first().click();
+  const sec = canvas.locator('.blk-layout').first();
+  await sec.locator('.lx--heading').click();
+  await p.keyboard.press('Escape');
+  await p.keyboard.press('Escape');
+  // The column's panel offers the basic elements, and More… for the rest
+  await p.locator('#inspector .el-add__more').click();
+  await p.locator('.el-picker .p-sub', { hasText: 'Forms, galleries and more' }).waitFor();
+  await p.locator('.el-tile[data-type="w-faq"]').click();
+  const faq = sec.locator('[data-node="rows.0.cols.0.els.3"].lx--w-faq');
+  await faq.locator('.faq__item').first().waitFor();
+  // Its text is typed on the page; its questions are edited in the panel
+  const heading = faq.locator('[data-edit="rows.0.cols.0.els.3.heading"]');
+  await heading.click();
+  await heading.press('Control+a');
+  await heading.pressSequentially('Good to know');
+  await heading.press('Enter');
+  await p.locator('#inspector .list-add').click();
+  await faq.locator('.faq__item').nth(2).waitFor();
+  await p.waitForTimeout(700);
+  const el = (await layoutData(p)).rows[0].cols[0].els[3];
+  assert.equal(el.type, 'w-faq');
+  assert.equal(el.heading, 'Good to know');
+  assert.equal(el.items.length, 3);
+  // It is published with the page, FAQ data included
+  const built = theme.buildSite(await savedDraft(p), { origin: 'https://example.com' }).files.get('index.html');
+  assert.match(built, /lx--w-faq lx--widget/);
+  assert.match(built, /"@type":"FAQPage"/);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
