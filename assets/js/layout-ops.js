@@ -153,7 +153,7 @@ export function removeColumn(row, i) {
 
 export const clampSpan = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(1, Math.min(12, n)) : 12; };
 
-// Sets one style value for every screen ('design') or for phones ('mobile');
+// Sets one style value for every screen ('design'), tablets ('tablet') or phones ('mobile');
 // an empty value removes the setting, and an empty group is removed too.
 export function setStyle(node, key, value, screen = 'design') {
   const empty = value === '' || value == null || (typeof value === 'number' && !Number.isFinite(value));
@@ -189,6 +189,56 @@ export function addTarget(data, path) {
   if (r < 0 || !rows[r]?.cols?.length) return null;
   const c = rows[r].cols.length - 1;
   return { list: `rows.${r}.cols.${c}.els`, index: (rows[r].cols[c].els || []).length };
+}
+
+// Where a copied piece of `kind` is pasted with `path` selected: an element as a
+// new element would go (addTarget); a row after the selected row (or at the end);
+// a column after the selected column, or at the end of the selected row.
+// Null when it can't go there (no row to put a column in, or a full row).
+export function pasteTarget(data, path, kind) {
+  if (kind === 'el') return addTarget(data, path);
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const parts = path ? String(path).split('.') : [];
+  const r = parts[0] === 'rows' ? Number(parts[1]) : null;
+  if (kind === 'row') return { list: 'rows', index: r == null ? rows.length : r + 1 };
+  if (kind !== 'col' || r == null || !rows[r]) return null;
+  const cols = Array.isArray(rows[r].cols) ? rows[r].cols : [];
+  if (cols.length >= 12) return null;
+  return { list: `rows.${r}.cols`, index: parts[2] === 'cols' ? Number(parts[3]) + 1 : cols.length };
+}
+
+// Puts a copy of `node` (a row, column or element) at a paste target. A pasted
+// column shares the row's width evenly with the others. Returns its path.
+export function pasteAt(data, target, node) {
+  const copy = JSON.parse(JSON.stringify(node));
+  const path = insertAt(data, target.list, target.index, copy);
+  if (kindOf(path) === 'col') {
+    const cols = getAt(data, target.list);
+    evenSpans(cols.length).forEach((s, j) => { cols[j].span = s; });
+  }
+  return path;
+}
+
+// A piece's look on every screen, for pasting onto another piece. Column widths
+// on tablets and phones stay with each column.
+const SCREENS = ['design', 'tablet', 'mobile'];
+export function copyStyle(node) {
+  const out = {};
+  for (const screen of SCREENS) {
+    const s = node?.[screen] && typeof node[screen] === 'object' ? { ...node[screen] } : null;
+    if (s) delete s.span;
+    if (s && Object.keys(s).length) out[screen] = JSON.parse(JSON.stringify(s));
+  }
+  return out;
+}
+
+export function pasteStyle(node, style) {
+  for (const screen of SCREENS) {
+    const span = node[screen]?.span;
+    const next = { ...(style?.[screen] || {}), ...(span != null ? { span } : {}) };
+    if (Object.keys(next).length) node[screen] = JSON.parse(JSON.stringify(next)); else delete node[screen];
+  }
+  return node;
 }
 
 export { LIST_OF };

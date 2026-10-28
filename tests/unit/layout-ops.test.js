@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   kindOf, locate, parentOf, getAt, exists, moveTo, moveBy, duplicateAt, evenSpans, setSpans, addColumn, removeColumn, moveBoundary, setStyle, nodeText, addTarget, shiftAfterRemoval,
+  pasteTarget, pasteAt, copyStyle, pasteStyle,
 } from '../../assets/js/layout-ops.js';
 
 const sample = () => ({
@@ -100,4 +101,35 @@ test('summaries and where new elements go', () => {
   assert.deepEqual(addTarget(d, 'rows.0'), { list: 'rows.0.cols.1.els', index: 0 });
   assert.deepEqual(addTarget(d, null), { list: 'rows.1.cols.0.els', index: 1 });
   assert.equal(addTarget({ rows: [] }, null), null);
+});
+
+test('pasting copied pieces: elements where new ones go, rows after the row, columns into the row', () => {
+  const d = sample();
+  assert.deepEqual(pasteTarget(d, 'rows.0.cols.0.els.0', 'el'), { list: 'rows.0.cols.0.els', index: 1 });
+  assert.deepEqual(pasteTarget(d, 'rows.0.cols.1', 'row'), { list: 'rows', index: 1 });
+  assert.deepEqual(pasteTarget(d, null, 'row'), { list: 'rows', index: 2 });
+  assert.deepEqual(pasteTarget(d, 'rows.0.cols.0.els.1', 'col'), { list: 'rows.0.cols', index: 1 });
+  assert.deepEqual(pasteTarget(d, 'rows.1', 'col'), { list: 'rows.1.cols', index: 1 });
+  assert.equal(pasteTarget(d, null, 'col'), null, 'a column needs a row');
+  assert.equal(pasteTarget({ rows: [{ cols: Array.from({ length: 12 }, () => ({ span: 1 })) }] }, 'rows.0', 'col'), null, 'full row');
+  // A pasted piece is a copy; a pasted column shares the width evenly
+  const heading = getAt(d, 'rows.0.cols.0.els.0');
+  const path = pasteAt(d, pasteTarget(d, 'rows.1.cols.0.els.0', 'el'), heading);
+  assert.equal(path, 'rows.1.cols.0.els.1');
+  assert.notEqual(getAt(d, path), heading);
+  assert.deepEqual(getAt(d, path), heading);
+  pasteAt(d, pasteTarget(d, 'rows.1.cols.0', 'col'), getAt(d, 'rows.0.cols.1'));
+  assert.deepEqual(d.rows[1].cols.map((c) => c.span), [6, 6]);
+});
+
+test('copying a style: every screen, but each column keeps its own widths', () => {
+  const from = { span: 4, design: { bg: 'dark', pt: 20 }, tablet: { span: 6, pt: 12 }, mobile: { span: 12 } };
+  const style = copyStyle(from);
+  assert.deepEqual(style, { design: { bg: 'dark', pt: 20 }, tablet: { pt: 12 } });
+  const to = { span: 8, design: { color: 'accent' }, mobile: { span: 6, fs: 14 } };
+  pasteStyle(to, style);
+  assert.deepEqual(to, { span: 8, design: { bg: 'dark', pt: 20 }, tablet: { pt: 12 }, mobile: { span: 6 } });
+  style.design.bg = 'white';
+  assert.equal(to.design.bg, 'dark', 'pasted values are copies');
+  assert.deepEqual(pasteStyle({ design: { pt: 1 } }, {}), {});
 });
