@@ -9,6 +9,8 @@ html { scroll-behavior: auto; }
 .edit-mode [data-edit]:focus { outline: 2px solid #2563eb; outline-offset: 3px; caret-color: #2563eb; }
 .edit-mode [data-section-id]:not(.is-selected) [data-edit]:empty:not(:focus) { display: none; }
 .edit-mode [data-edit]:empty::before { content: attr(data-ph); opacity: .45; pointer-events: none; }
+/* An empty inline field (like a note after the copyright) can still be clicked into. */
+.edit-mode span[data-edit]:empty { display: inline-block; }
 .edit-mode .hero__title[data-edit]:focus { -webkit-text-fill-color: currentColor; color: #fff; background: none; }
 .edit-mode .sec--light .hero__title[data-edit]:focus, .edit-mode .sec--alt .hero__title[data-edit]:focus { color: var(--c-text); }
 .edit-mode .contact__form input, .edit-mode .contact__form textarea { pointer-events: none; }
@@ -17,6 +19,8 @@ html { scroll-behavior: auto; }
 .edit-mode .is-hidden::before { content: 'Hidden on live site'; position: absolute; z-index: 5; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 6px 12px; border-radius: 8px; background: #111827; color: #fff; font: 600 12px/1 Inter, system-ui, sans-serif; }
 
 .ed-chip, .ed-tools { font: 600 12px/1 Inter, system-ui, sans-serif; letter-spacing: 0; text-transform: none; }
+/* The page may be shown zoomed out to fit; the editor's toolbars stay full size. */
+.ed-chip, .ed-tools, .ed-el-tools, .ed-node-tools { zoom: var(--ed-unzoom, 1); }
 .ed-chip { position: absolute; z-index: 40; top: 8px; left: 8px; padding: 6px 9px; border-radius: 7px; background: #2563eb; color: #fff; pointer-events: none; box-shadow: 0 4px 12px -4px rgba(37, 99, 235, .6); }
 .ed-tools { position: absolute; z-index: 40; top: 8px; right: 8px; display: flex; gap: 2px; padding: 3px; border-radius: 9px; background: #111827; box-shadow: 0 8px 20px -6px rgba(0, 0, 0, .45); }
 .ed-tools button { display: inline-grid; place-items: center; border: 0; cursor: pointer; }
@@ -86,7 +90,8 @@ html { scroll-behavior: auto; }
 .edit-mode [data-node].is-node-sel { outline: 2px solid #2563eb; outline-offset: 2px; }
 .edit-mode [data-kind="row"].is-node-sel { outline-color: #7c3aed; }
 .edit-mode [data-kind="col"].is-node-sel { outline-color: #0d9488; }
-.edit-mode .hide-d, .edit-mode .hide-m { opacity: .45; }
+/* Hidden on the screen being previewed: faded (still selectable). */
+.edit-mode:not([data-device]) .hide-d, .edit-mode[data-device="desktop"] .hide-d, .edit-mode[data-device="tablet"] .hide-t, .edit-mode[data-device="mobile"] .hide-m { opacity: .45; }
 .ed-node-tools { position: absolute; z-index: 42; top: -30px; left: -2px; display: flex; align-items: center; gap: 1px; padding: 2px; border-radius: 8px; background: #2563eb; box-shadow: 0 6px 16px -6px rgba(37, 99, 235, .7); font: 600 12px/1 Inter, system-ui, sans-serif; letter-spacing: 0; text-transform: none; white-space: nowrap; }
 .ed-node-tools--row { background: #7c3aed; }
 .ed-node-tools--col { background: #0d9488; }
@@ -146,3 +151,6 @@ html { scroll-behavior: auto; }
 .ed-rt__custom { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: 12.5px; cursor: pointer; }
 .ed-rt__custom input { width: 30px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
 .edit-mode .lx-box--card:hover { transform: none; }
+/* A see-through header over the first section: while editing it scrolls with the page,
+   so it never sits over the sections below (on the site it turns solid once scrolled). */
+.edit-mode .site-header--overlay { position: relative; }

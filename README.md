@@ -46,7 +46,14 @@ Add a **Layout** section (Add → Basic) to design a section from scratch:
   (cards or panels that hold elements of their own) and more. Drag an element by its handle into
   another column, box or layout section. **More…** adds forms (contact, quote request), FAQ, a
   photo gallery, blog posts, a booking calendar, a map and the other premade sections, sized to
-  the column.
+  the column, and has a search box. **Add → Elements** lists them all to drag onto the page (or
+  click to add where the selection is), including your logo, menu, social links, contact
+  details and copyright line for headers and footers.
+- **Copy, paste and right-click.** Right-click any row, column or element (or a section) for
+  copy, paste, duplicate, copy style, paste style, save to reuse and delete. Ctrl+C / Ctrl+V copy
+  and paste pieces (also onto another page) and Ctrl+Alt+C / Ctrl+Alt+V a piece's style. Saved
+  pieces show under **My saved pieces** when adding an element or a row. While you type in text,
+  right-click is the browser's own menu (spelling, copy and paste).
 - **Selecting.** Click the innermost piece you want. The breadcrumb at the top of the panel
   (Layout › Row 1 › Column 2 › Heading) and Escape go back up; Layers shows the whole tree.
 - **Text toolbar.** Click text in a layout and type. Select words for paragraph or heading,
@@ -54,14 +61,26 @@ Add a **Layout** section (Add → Basic) to design a section from scratch:
   Pasted text keeps its formatting but not the fonts and colours of where it came from.
 - **Style tab.** Every section (including the premade ones) and every row, column and element
   has a Style tab: spacing, size, background colour, gradient or image, border, corners, shadow,
-  text colour, font, size and alignment, and hiding on computers or phones. Switch it to
-  **Phones** to change something only on phones; the preview switches with it.
+  text colour, font, size and alignment, and hiding on computers, tablets or phones. Switch it to
+  **Tablets** or **Phones** to change something only there; the preview switches with it.
+  Columns can have their own width on tablets. **Hover** changes a column, card or button while
+  the mouse is over it, and **Animation** fades or slides it in as visitors scroll to it (with a
+  preview button).
+- **Real screen sizes.** The page is drawn at the width of a computer (at least 1080px), tablet
+  (820px) or phone (390px) and zoomed out to fit the window when needed (the percentage shows
+  next to the size buttons), so each layout looks exactly as visitors see it.
+- **Header and footer.** Click the header for its settings: logo left, logo and menu left, or
+  centred; stays at the top, hides while scrolling down, or scrolls away; see-through over a dark
+  first section; and the phone number and social links next to the button. Click the footer and
+  press **Design the footer** to build it from rows, columns and elements like a section (it
+  starts out looking like the standard footer); **Use the standard footer** switches back.
 
 - **Make fully editable.** A premade section (hero, services, image + text, FAQ, …) has a
   **Make fully editable** button: it is rebuilt from rows, columns and elements and looks the
   same, so every heading, button, card and image can be moved, restyled or removed. **Pages →
-  Make fully editable** does a whole page, and **Add as fully editable** (top of the Add tab)
-  adds new premade sections that way. Undo brings the original back.
+  Make fully editable** does a whole page, and **Add as fully editable** (top of the Add tab, on
+  unless you turn it off) adds new premade sections and pages from templates that way. Undo
+  brings the original back.
 
 ### Checkup
 

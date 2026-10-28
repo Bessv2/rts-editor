@@ -79,7 +79,16 @@ function hydrateIcons(root = document) { $$('[data-icon]:empty', root).forEach((
 // Document helpers
 const page = () => state.doc.pages[state.page];
 const sections = () => page().sections;
-const findSection = (id) => sections().find((s) => s.id === id);
+// A footer designed as a layout (site feature "footer-layout") is edited like a
+// layout section with the id __footer; its data is site.footerLayout.
+let footerPseudo = null;
+function footerSection() {
+  const s = state.doc.site;
+  if (!has('footer-layout') || s.footerMode !== 'layout' || !Array.isArray(s.footerLayout?.rows)) return null;
+  if (footerPseudo?.data !== s.footerLayout) footerPseudo = { id: '__footer', type: 'layout', label: 'Footer', data: s.footerLayout };
+  return footerPseudo;
+}
+const findSection = (id) => (id === '__footer' ? footerSection() : sections().find((s) => s.id === id));
 const isChrome = (id) => id === '__header' || id === '__footer';
 const targetFor = (id) => (isChrome(id) ? state.doc.site : findSection(id)?.data);
 
@@ -173,6 +182,9 @@ function initCanvas() {
       d.addEventListener('dragend', endCanvasDrag);
       d.addEventListener('pointerdown', (e) => { const h = e.target.closest?.('[data-col-handle]'); if (h) startColResize(e, h); });
       d.addEventListener('mouseover', onCanvasHover);
+      d.addEventListener('contextmenu', onCanvasContext);
+      d.addEventListener('pointerdown', onCanvasPointerDown, true);
+      d.defaultView.addEventListener('scroll', closeContextOnScroll, { passive: true });
       d.body.dataset.device = state.device;
       if (has('rich-text')) {
         try { d.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* older browsers */ }
@@ -354,7 +366,7 @@ function onCanvasDragOver(e) {
   const t = dropTarget(e);
   if (!t) return;
   e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
+  e.dataTransfer.dropEffect = drag.isNew ? 'copy' : 'move';
   clearDrop();
   t.node.classList.add(t.into ? 'ed-drop-into' : t.before ? 'ed-drop-before' : 'ed-drop-after');
   if (t.side) t.node.classList.add('ed-drop-side');
@@ -591,7 +603,8 @@ function addSection(type, at = null) {
 // Premade sections rebuilt from layout pieces that look the same (site feature "convert-layout").
 const CONVERT = has('convert-layout') && theme.convertSection && theme.canConvert ? { one: theme.convertSection, can: theme.canConvert } : null;
 const EDITABLE_KEY = 'add-editable';
-const addEditable = () => { try { return localStorage.getItem(EDITABLE_KEY) === '1'; } catch { return false; } };
+// On unless turned off: new sections arrive built from layout pieces.
+const addEditable = () => { try { return localStorage.getItem(EDITABLE_KEY) !== '0'; } catch { return true; } };
 
 // Converts the sections of page `pageIndex` (all, or only `ids`); returns how many changed.
 function convertSections(pageIndex, ids = null) {
@@ -648,6 +661,9 @@ function copySection(id) {
   if (!sec) return;
   state.clipboard = clone(sec);
   try { localStorage.setItem(CLIP_KEY, JSON.stringify(sec)); } catch { /* too large; memory copy still works */ }
+  // Ctrl+V pastes what was copied last.
+  state.pieceClip = null;
+  writeStore(PIECE_KEY, null);
   toast(`${BLOCKS[sec.type].label} copied. Paste it on any page from the Add tab or with Ctrl+V.`);
   if (state.tab === 'add') renderPanel();
 }
@@ -941,18 +957,230 @@ function nodeTool(tool, secId = state.sel, path = state.node) {
   layoutChanged(secId, next);
 }
 
-// Basic elements first, then the premade sections that can sit in a column (widgets).
+// Copy and paste for rows, columns and elements (also into other sections and
+// pages), a piece's look (its style on every screen), and pieces saved to reuse.
+// The clipboards are kept in this browser, like a copied section.
+const PIECE_KEY = 'piece-clipboard';
+const STYLE_KEY = 'style-clipboard';
+const readStore = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
+const writeStore = (key, v) => { try { if (v == null) localStorage.removeItem(key); else localStorage.setItem(key, JSON.stringify(v)); } catch { /* blocked or full: the copy in memory still works */ } };
+const pieceClip = () => state.pieceClip || readStore(PIECE_KEY);
+const styleClip = () => state.styleClip || readStore(STYLE_KEY);
+const KIND_NAME = { row: 'Row', col: 'Column', el: 'Element' };
+const pieceName = (piece) => (piece?.kind === 'el' ? LAYOUT?.[piece.node?.type]?.label || 'Element' : KIND_NAME[piece?.kind] || 'Piece');
+const usablePiece = (piece) => !!piece && !!KIND_NAME[piece.kind] && piece.node && typeof piece.node === 'object' && (piece.kind !== 'el' || !!LAYOUT?.[piece.node.type]);
+
+function copyPiece(secId = state.sel, path = state.node) {
+  const sec = findSection(secId);
+  const node = nodeOf(sec, path);
+  if (!node) return;
+  state.pieceClip = { kind: ops.kindOf(path), node: clone(node) };
+  writeStore(PIECE_KEY, state.pieceClip);
+  toast(`${nodeLabel(sec, path)} copied. Select where it goes, on any page, and paste it (Ctrl+V).`);
+}
+
+// Puts a copied or saved piece where the selection is in a layout section.
+function placePiece(piece, secId = state.sel, path = state.node, message = '') {
+  const sec = findSection(secId);
+  if (!usablePiece(piece) || !isLayout(sec)) return false;
+  let target = ops.pasteTarget(sec.data, path, piece.kind);
+  if (!target && piece.kind === 'el') {
+    sec.data.rows = [...(Array.isArray(sec.data.rows) ? sec.data.rows : []), { cols: [{ span: 12, els: [] }] }];
+    target = ops.addTarget(sec.data, null);
+  }
+  if (!target) { toast(piece.kind === 'col' ? 'Select a row or column first. A row has room for up to 12 columns.' : 'Select where it goes first.'); return true; }
+  const next = ops.pasteAt(sec.data, target, piece.node);
+  state.sel = secId;
+  state.el = null;
+  layoutChanged(secId, next);
+  toast(message || `${pieceName(piece)} pasted`, { action: 'Undo', onAction: undo });
+  setTimeout(() => cdoc()?.querySelector(nodeSel(secId, next))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 40);
+  return true;
+}
+const pastePiece = (secId = state.sel, path = state.node) => placePiece(pieceClip(), secId, path);
+
+const styleTarget = (secId, path) => { const sec = findSection(secId); return path ? nodeOf(sec, path) : sec?.data; };
+function copyStyle(secId = state.sel, path = state.node) {
+  const node = styleTarget(secId, path);
+  if (!node) return;
+  state.styleClip = ops.copyStyle(node);
+  writeStore(STYLE_KEY, state.styleClip);
+  toast(Object.keys(state.styleClip).length ? 'Style copied. Select something else and paste it (Ctrl+Alt+V).' : 'This has no style settings of its own yet.');
+}
+
+function pasteStyle(secId = state.sel, path = state.node) {
+  const node = styleTarget(secId, path);
+  const clip = styleClip();
+  if (!node || !clip) return;
+  ops.pasteStyle(node, clip);
+  if (path) layoutChanged(secId, path); else { commit(); refreshSection(secId); renderInspector(); }
+  toast('Style pasted', { action: 'Undo', onAction: undo });
+}
+
+// Saved pieces live with the saved sections (doc.saved), as { piece: { kind, node } }.
+const savedPieces = (kind) => (state.doc.saved || []).filter((sv) => usablePiece(sv.piece) && (!kind || sv.piece.kind === kind));
+function savePiece(secId = state.sel, path = state.node) {
+  const sec = findSection(secId);
+  const node = nodeOf(sec, path);
+  const kind = ops.kindOf(path);
+  if (!node || kind === 'col') return;
+  const name = prompt('Name this saved piece', ops.nodeText(node) || nodeLabel(sec, path));
+  if (name === null) return;
+  state.doc.saved ||= [];
+  state.doc.saved.push({ id: uid('saved'), name: name.trim() || nodeLabel(sec, path), piece: { kind, node: clone(node) } });
+  commit();
+  if (state.tab === 'add') renderPanel();
+  toast(`Saved. Find it under My saved pieces when you add ${kind === 'row' ? 'a row' : 'an element'}.`);
+}
+
+// Right-click menu on the page ---------------------------------------------------
+
+let ctxOpenedAt = 0;
+function closeContextMenu() { $('#ctx-menu')?.remove(); }
+// Scrolling the page closes the menu (not the small scroll a right-click itself can cause).
+const closeContextOnScroll = () => { if (performance.now() - ctxOpenedAt > 400) closeContextMenu(); };
+
+function openContextMenu(x, y, items) {
+  closeContextMenu();
+  const menu = el('div', { class: 'ctx-menu', id: 'ctx-menu', role: 'menu' });
+  for (const it of items) {
+    if (!it) { if (menu.lastChild && !menu.lastChild.classList.contains('ctx-sep')) menu.append(el('div', { class: 'ctx-sep', role: 'separator' })); continue; }
+    const [label, iconName, fn, keys = '', disabled = false, danger = false] = it;
+    menu.append(el('button', { type: 'button', role: 'menuitem', class: danger ? 'is-danger' : '', disabled, onclick: () => { closeContextMenu(); fn(); } },
+      ico(iconName), el('span', {}, label), keys ? el('kbd', {}, keys) : null));
+  }
+  if (menu.lastChild?.classList.contains('ctx-sep')) menu.lastChild.remove();
+  document.body.append(menu);
+  ctxOpenedAt = performance.now();
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+  menu.querySelector('button:not([disabled])')?.focus();
+  menu.addEventListener('keydown', (e) => {
+    const btns = $$('button:not([disabled])', menu);
+    const i = btns.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); btns[(i + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length]?.focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeContextMenu(); }
+  });
+}
+
+function contextItems(id, path) {
+  const sec = findSection(id);
+  const piece = pieceClip();
+  const styles = !!styleClip();
+  const pasteHere = isLayout(sec) && usablePiece(piece) ? [`Paste ${pieceName(piece).toLowerCase()}`, 'clipboard', () => pastePiece(id, path), 'Ctrl+V'] : null;
+  if (path) {
+    const kind = ops.kindOf(path);
+    return [
+      ['Copy', 'copy', () => copyPiece(id, path), 'Ctrl+C'],
+      pasteHere || ['Paste', 'clipboard', () => {}, 'Ctrl+V', true],
+      ['Duplicate', 'copy', () => nodeTool('node-copy', id, path), 'Ctrl+D'],
+      null,
+      ['Copy style', 'droplet', () => copyStyle(id, path), 'Ctrl+Alt+C'],
+      ['Paste style', 'droplet', () => pasteStyle(id, path), 'Ctrl+Alt+V', !styles],
+      null,
+      kind !== 'col' ? ['Save to reuse', 'bookmark', () => savePiece(id, path)] : null,
+      ['Select what it’s in', 'layers', () => selectNode(id, ops.parentOf(path)), 'Esc'],
+      null,
+      ['Delete', 'trash', () => nodeTool('node-delete', id, path), 'Del', false, true],
+    ];
+  }
+  if (isChrome(id)) {
+    return [
+      ['Edit header & footer', 'sliders', () => select(id)],
+      pasteHere,
+      isLayout(sec) ? ['Add a row', 'plus', () => openRowPicker(id)] : null,
+    ].filter(Boolean);
+  }
+  const clip = getClipboard();
+  return [
+    ['Copy section', 'copy', () => copySection(id), 'Ctrl+C'],
+    clip && BLOCKS[clip.type] ? [`Paste ${BLOCKS[clip.type].label.toLowerCase()} below`, 'clipboard', () => { state.sel = id; pasteSection(); }] : null,
+    pasteHere,
+    ['Duplicate', 'copy', () => runTool('duplicate', id), 'Ctrl+D'],
+    null,
+    STYLE_GROUPS ? ['Copy style', 'droplet', () => copyStyle(id, null), 'Ctrl+Alt+C'] : null,
+    STYLE_GROUPS ? ['Paste style', 'droplet', () => pasteStyle(id, null), 'Ctrl+Alt+V', !styles] : null,
+    null,
+    ['Save to reuse', 'bookmark', () => saveSection(id)],
+    [sec?.hidden ? 'Show on live site' : 'Hide on live site', sec?.hidden ? 'eye' : 'eye-off', () => runTool('hide', id)],
+    CONVERT?.can(sec) ? ['Make fully editable', 'grid', () => makeEditable1(id)] : null,
+    null,
+    ['Delete section', 'trash', () => runTool('delete', id), 'Del', false, true],
+  ];
+}
+
+// Whether the text under a right-click was already being typed in before the
+// press (the press itself puts the cursor in it).
+let rightClickTyping = false;
+function onCanvasPointerDown(e) {
+  if (e.button === 2) { const text = e.target.closest?.('[data-edit]'); rightClickTyping = !!text && cdoc().activeElement === text; } else closeContextMenu();
+}
+
+function onCanvasContext(e) {
+  // Text being typed in keeps the browser's own menu (spelling suggestions, paste).
+  const text = e.target.closest?.('[data-edit]');
+  if (text && rightClickTyping) return;
+  if (text && cdoc().activeElement === text) text.blur();
+  const secNode = e.target.closest?.('[data-section-id]');
+  if (!secNode || e.target.closest('.ed-rt')) return;
+  e.preventDefault();
+  const id = secNode.dataset.sectionId;
+  const sec = findSection(id);
+  const path = isLayout(sec) ? e.target.closest('[data-node]')?.dataset.node || null : null;
+  if (isLayout(sec)) { if (id !== state.sel || path !== state.node) selectNode(id, path); } else if (id !== state.sel) select(id);
+  // The page is zoomed to fit, so its coordinates are scaled to the editor's.
+  const fr = frame.getBoundingClientRect();
+  const k = fr.width / (frame.offsetWidth || fr.width);
+  openContextMenu(fr.left + e.clientX * k, fr.top + e.clientY * k, contextItems(id, path));
+}
+
+// Basic elements first, then the site's own pieces (logo, menu…), then the
+// premade sections that can sit in a column (widgets).
 const layoutGroups = () => {
   const all = Object.entries(LAYOUT);
-  return [['Elements', all.filter(([, e]) => e.group !== 'Widgets')], ['Forms, galleries and more', all.filter(([, e]) => e.group === 'Widgets')]].filter(([, list]) => list.length);
+  return [['Elements', all.filter(([, e]) => !e.group)], ['For headers and footers', all.filter(([, e]) => e.group === 'Site')],
+    ['Forms, galleries and more', all.filter(([, e]) => e.group === 'Widgets')]].filter(([, list]) => list.length);
 };
+const elementHint = (type, e) => LAYOUT_HINTS[type] || e.description || '';
 
 function openLayoutPicker(secId, target) {
-  const tile = ([type, e]) => el('button', { type: 'button', class: 'el-tile', 'data-type': type, onclick: () => { closeModal(); addLayoutElement(secId, type, target); } },
-    ico(e.icon), el('strong', {}, e.label), el('small', {}, LAYOUT_HINTS[type] || e.description || ''));
-  openModal('Add an element', el('div', { class: 'el-picker' },
+  const tile = ([type, e]) => el('button', { type: 'button', class: 'el-tile', 'data-type': type, 'data-find': `${e.label} ${elementHint(type, e)} ${type}`.toLowerCase(), onclick: () => { closeModal(); addLayoutElement(secId, type, target); } },
+    ico(e.icon), el('strong', {}, e.label), el('small', {}, elementHint(type, e)));
+  const saved = savedPieces('el');
+  const savedTile = (sv) => el('button', { type: 'button', class: 'el-tile el-tile--saved', 'data-find': `${sv.name} ${pieceName(sv.piece)}`.toLowerCase(), onclick: () => { closeModal(); placeSavedPiece(sv, secId, target); } },
+    ico(LAYOUT[sv.piece.node.type]?.icon || 'bookmark'), el('strong', {}, sv.name), el('small', {}, pieceName(sv.piece)));
+  const groups = [...(saved.length ? [['My saved pieces', saved.map(savedTile)]] : []), ...layoutGroups().map(([title, list]) => [title, list.map(tile)])];
+  const body = el('div', { class: 'el-picker' },
     el('p', {}, 'Click it on the page afterwards to type or change it, and drag it by its handle to move it.'),
-    layoutGroups().flatMap(([title, list]) => [el('p', { class: 'p-sub' }, title), el('div', { class: 'el-tiles' }, list.map(tile))])));
+    groups.map(([title, tiles]) => el('div', { class: 'el-group' }, el('p', { class: 'p-sub' }, title), el('div', { class: 'el-tiles' }, tiles))),
+    el('p', { class: 'p-hint el-none', hidden: true }, 'Nothing matches. Try another word, like “photo”, “form” or “map”.'));
+  const search = el('input', { class: 'in el-search', type: 'search', placeholder: 'Search elements…', 'aria-label': 'Search elements', oninput: () => {
+    const q = search.value.trim().toLowerCase();
+    let any = false;
+    $$('.el-group', body).forEach((g) => {
+      let shown = 0;
+      $$('.el-tile', g).forEach((t) => { const ok = !q || q.split(/\s+/).every((w) => t.dataset.find.includes(w)); t.hidden = !ok; shown += ok; });
+      g.hidden = !shown;
+      any ||= shown > 0;
+    });
+    $('.el-none', body).hidden = any;
+  }, onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); $$('.el-tile', body).find((t) => !t.hidden)?.click(); } } });
+  body.prepend(search);
+  openModal('Add an element', body);
+  setTimeout(() => search.focus(), 30);
+}
+
+// A saved piece added from a picker: at the picker's target, or where the selection is.
+function placeSavedPiece(sv, secId, target) {
+  const sec = findSection(secId);
+  if (!isLayout(sec) || !usablePiece(sv.piece)) return;
+  if (target && sv.piece.kind === 'el') {
+    const next = ops.pasteAt(sec.data, target, sv.piece.node);
+    state.sel = secId;
+    layoutChanged(secId, next);
+    toast(`${sv.name} added`, { action: 'Undo', onAction: undo });
+  } else placePiece(sv.piece, secId, state.sel === secId ? state.node : null, `${sv.name} added`);
 }
 
 function addLayoutElement(secId, type, target) {
@@ -974,10 +1202,20 @@ function addLayoutElement(secId, type, target) {
 }
 
 function openRowPicker(secId, at = null) {
+  const saved = savedPieces('row');
   openModal('Add a row', el('div', {},
     el('p', {}, 'Choose the columns. You can change them, drag their edges to resize and add more later. On phones they stack.'),
     el('div', { class: 'row-presets' }, ROW_PRESETS.map((spans) =>
-      el('button', { type: 'button', class: 'row-preset', title: presetName(spans), onclick: () => { closeModal(); addRow(secId, spans, at); } }, presetBars(spans), el('small', {}, presetName(spans)))))));
+      el('button', { type: 'button', class: 'row-preset', title: presetName(spans), onclick: () => { closeModal(); addRow(secId, spans, at); } }, presetBars(spans), el('small', {}, presetName(spans))))),
+    saved.length ? el('div', {}, el('p', { class: 'p-sub' }, 'My saved rows'), el('div', { class: 'saved-list' }, saved.map((sv) => el('button', { type: 'button', class: 'saved-item__main', onclick: () => {
+      closeModal();
+      const sec = findSection(secId);
+      if (!isLayout(sec)) return;
+      const next = ops.pasteAt(sec.data, { list: 'rows', index: at ?? (Array.isArray(sec.data.rows) ? sec.data.rows.length : 0) }, sv.piece.node);
+      state.sel = secId;
+      layoutChanged(secId, next);
+      toast(`${sv.name} added`, { action: 'Undo', onAction: undo });
+    } }, presetBars((sv.piece.node.cols || []).map((c) => ops.clampSpan(c.span))), el('span', { class: 'layer__txt' }, el('strong', {}, sv.name), el('small', {}, `${(sv.piece.node.cols || []).length} columns`)))))) : null));
 }
 
 function addRow(secId, spans, at = null) {
@@ -1098,6 +1336,8 @@ function nodeDropTarget(e) {
   const secNode = e.target.closest?.('[data-section-id]');
   const sec = secNode && findSection(secNode.dataset.sectionId);
   if (!isLayout(sec)) return null;
+  // A new element dropped on an empty layout starts its first row.
+  if (drag.isNew && drag.nk === 'el' && !(Array.isArray(sec.data.rows) && sec.data.rows.length)) return { node: secNode, sec, newRow: true, into: true };
   const same = sec.id === drag.sec;
   const inside = (n) => same && (n.dataset.node === drag.path || n.dataset.node.startsWith(`${drag.path}.`));
   const len = (path) => (ops.getAt(sec.data, path) || []).length;
@@ -1143,6 +1383,7 @@ function nodeDropTarget(e) {
 }
 
 function dropNode(t) {
+  if (drag.isNew) { dropNewPiece(t); return; }
   const from = findSection(drag.sec);
   const moved = from && ops.moveTo(from.data, drag.path, t.sec.data, t.list, t.index);
   if (!moved) { endCanvasDrag(); return; }
@@ -1153,6 +1394,24 @@ function dropNode(t) {
     state.node = moved;
     commit(); renderCanvas(); renderInspector();
     if (state.tab === 'layers') renderPanel();
+  });
+}
+
+// An element (or saved piece) dragged in from the Elements panel.
+function dropNewPiece(t) {
+  const node = drag.piece ? clone(drag.piece.node) : LAYOUT[drag.isNew]?.defaults();
+  if (!node) { endCanvasDrag(); return; }
+  let next;
+  if (t.newRow) { t.sec.data.rows = [{ cols: [{ span: 12, els: [node] }] }]; next = 'rows.0.cols.0.els.0'; } else next = ops.pasteAt(t.sec.data, t, node);
+  const label = drag.piece ? pieceName(drag.piece) : LAYOUT[drag.isNew].label;
+  const toId = t.sec.id;
+  afterDrag(() => {
+    state.sel = toId;
+    state.el = null;
+    state.node = next;
+    commit(); renderCanvas(); renderInspector();
+    if (state.tab !== 'add') renderPanel();
+    toast(`${label} added`, { action: 'Undo', onAction: undo });
   });
 }
 
@@ -1185,7 +1444,7 @@ function childList(sec, listPath) {
   } else wrap.append(el('p', { class: 'p-hint' }, 'Nothing here yet.'));
   // The basic elements as buttons; forms, galleries and the rest are under More.
   const target = { list: listPath, index: items.length };
-  wrap.append(el('div', { class: 'el-add' }, Object.entries(LAYOUT).filter(([, e]) => e.group !== 'Widgets').map(([type, e]) =>
+  wrap.append(el('div', { class: 'el-add' }, Object.entries(LAYOUT).filter(([, e]) => !e.group).map(([type, e]) =>
     el('button', { type: 'button', class: 'el-add__btn', title: `Add ${e.label.toLowerCase()}`, onclick: () => addLayoutElement(sec.id, type, target) }, ico(e.icon), e.label)),
   el('button', { type: 'button', class: 'el-add__btn el-add__more', title: 'Forms, FAQ, gallery, blog posts, booking, map and more', onclick: () => openLayoutPicker(sec.id, target) }, ico('plus'), 'More…')));
   return wrap;
@@ -1217,11 +1476,15 @@ function nodeContent(box, sec, path) {
     const span = ops.clampSpan(node.span);
     const out = el('output', {}, spanText(span));
     const phoneSpan = ops.clampSpan(node.mobile?.span ?? 12);
+    const tabletSpan = node.tablet?.span != null && node.tablet.span !== '' ? ops.clampSpan(node.tablet.span) : null;
     box.append(insGroup('Column',
       el('div', { class: 'f' }, el('label', {}, 'Width on computers', out),
         el('input', { type: 'range', min: 1, max: 12, step: 1, value: span, 'data-path': `${path}.span`, oninput: (e) => {
           node.span = Number(e.target.value); out.textContent = spanText(node.span); refresh(); commitSoon();
         } })),
+      TABLETS ? el('div', { class: 'f', 'data-tablet-span': '' }, el('span', { class: 'f__label' }, 'Width on tablets'),
+        el('div', { class: 'ed-seg ed-seg--full' }, [[null, 'Same'], [12, 'Full'], [6, '½'], [4, '⅓'], [8, '⅔']].map(([v, l]) =>
+          el('button', { type: 'button', class: tabletSpan === v ? 'is-on' : '', title: v ? spanText(v) : 'As wide as on computers', onclick: () => { ops.setStyle(node, 'span', v ?? '', 'tablet'); layoutChanged(sec.id, path); } }, l)))) : null,
       el('div', { class: 'f' }, el('span', { class: 'f__label' }, 'Width on phones'),
         el('div', { class: 'ed-seg ed-seg--full' }, [[12, 'Full'], [6, '½'], [4, '⅓'], [3, '¼']].map(([v, l]) =>
           el('button', { type: 'button', class: phoneSpan === v ? 'is-on' : '', onclick: () => { ops.setStyle(node, 'span', v === 12 ? '' : v, 'mobile'); layoutChanged(sec.id, path); } }, l)))),
@@ -1258,6 +1521,7 @@ function swatchColor(v) {
 }
 
 function styleControl(it, val, inherited, set) {
+  if (it.type === 'note') return el('p', { class: 'f__help st-note' }, it.text);
   const wrap = el('div', { class: `f st st--${it.type}`, 'data-style': it.key });
   const label = el('span', { class: 'f__label' }, it.label);
   const isSet = val != null && val !== '';
@@ -1281,8 +1545,8 @@ function styleControl(it, val, inherited, set) {
       return wrap;
     case 'select':
       put(wrap, head, el('select', { class: 'in', onchange: (e) => set(e.target.value, { structural: true }) },
-        el('option', { value: '' }, inherited != null && inherited !== '' ? `Same as all screens (${(it.options.find(([v]) => String(v) === String(inherited)) || [, inherited])[1]})` : 'Default'),
-        it.options.map(([v, l]) => el('option', { value: v, selected: String(val) === String(v) }, l))));
+        el('option', { value: '' }, inherited != null && inherited !== '' ? `Same as bigger screens (${(it.options.find(([v]) => String(v) === String(inherited)) || [, inherited])[1]})` : (it.options.find(([v]) => v === '') || [, 'Default'])[1]),
+        it.options.filter(([v]) => v !== '').map(([v, l]) => el('option', { value: v, selected: String(val) === String(v) }, l))));
       return wrap;
     case 'toggle': {
       const on = (isSet ? val : inherited) === true;
@@ -1303,48 +1567,78 @@ function styleControl(it, val, inherited, set) {
   }
 }
 
+// The screen the Style tab changes follows the preview size: all screens
+// (design), tablets (tablet, when the site has tablet styles) or phones (mobile).
+const TABLETS = has('tablet-styles');
+const styleScreen = () => (state.device === 'mobile' ? 'mobile' : state.device === 'tablet' && TABLETS ? 'tablet' : 'design');
+// The settings a smaller screen starts from: every screen's, then the tablet's for phones.
+const inheritedStyle = (node, screen) => (screen === 'mobile' ? { ...(node.design || {}), ...(TABLETS ? node.tablet || {} : {}) } : screen === 'tablet' ? { ...(node.design || {}) } : {});
+const SCREEN_HELP = {
+  design: () => `Applies to every screen. Switch to ${TABLETS ? 'Tablets or Phones' : 'Phones'} to change something only there.`,
+  tablet: () => 'These changes apply to tablets and small laptops (narrower than 1024px), and to phones unless they have their own. Empty settings use the value for all screens (shown faded).',
+  mobile: () => `These changes only apply to phones (narrower than 760px). Empty settings use the value for ${TABLETS ? 'tablets or ' : ''}all screens (shown faded).`,
+};
+
 function styleTab(box, sec) {
   const path = isLayout(sec) ? currentNode(sec) : null;
   const node = path ? nodeOf(sec, path) : sec.data;
   const k = path ? ops.kindOf(path) : 'section';
   const kind = k === 'el' && node.type === 'box' ? 'box' : k;
-  const phone = state.device === 'mobile';
-  const screen = phone ? 'mobile' : 'design';
+  const screen = styleScreen();
+  const small = screen !== 'design';
   const values = node[screen] || {};
-  const base = node.design || {};
-  const merged = phone ? { ...base, ...values } : values;
+  const base = inheritedStyle(node, screen);
+  const merged = small ? { ...base, ...values } : values;
   const set = (key) => (v, { soon = false, structural = false } = {}) => {
     ops.setStyle(node, key, v, screen);
     refreshSection(sec.id);
     if (soon) commitSoon(); else commit();
     if (structural) renderInspector();
+    if (key === 'anim' || key === 'animDelay') playAnimation(sec.id, path);
   };
+  const screens = [['desktop', 'monitor', 'All screens'], ...(TABLETS ? [['tablet', 'tablet', 'Tablets']] : []), ['mobile', 'smartphone', 'Phones']];
   box.append(el('div', { class: 'style-screen' },
-    el('div', { class: 'ed-seg ed-seg--full' }, [['desktop', 'monitor', 'All screens'], ['mobile', 'smartphone', 'Phones']].map(([dv, ic, l]) =>
-      el('button', { type: 'button', class: state.device === dv ? 'is-on' : '', 'data-screen': dv, onclick: () => { setDevice(dv); renderInspector(); } }, ico(ic), l))),
-    el('p', { class: 'f__help' }, phone ? 'These changes only apply to phones. Empty settings use the value for all screens (shown faded).' : 'Applies to every screen. Switch to Phones to change something only there.')));
-  if (kind === 'section' && !phone) {
+    el('div', { class: 'ed-seg ed-seg--full' }, screens.map(([dv, ic, l]) =>
+      el('button', { type: 'button', class: state.device === dv || (dv === 'desktop' && state.device === 'tablet' && !TABLETS) ? 'is-on' : '', 'data-screen': dv, onclick: () => { setDevice(dv); renderInspector(); } }, ico(ic), l))),
+    el('p', { class: 'f__help' }, SCREEN_HELP[screen]())));
+  if (kind === 'section' && !small && sec.id !== '__footer') {
     const inner = el('div');
     renderFields(inner, STYLE_FIELDS, sec.data, () => refreshSection(sec.id));
     box.append(el('details', { class: 'insp-group', open: true }, el('summary', {}, 'Section style', el('span', { class: 'chev' }, ico('chevron-down'))), inner));
   }
   for (const g of STYLE_GROUPS) {
-    const items = g.items.filter((it) => (!it.on || it.on.includes(kind) || (kind === 'box' && it.on.includes('el'))) && (!it.phoneOnly || phone) && (!it.when || it.when(merged))
+    // Hover and animation are the same on every screen.
+    if (g.allScreens && small) continue;
+    const items = g.items.filter((it) => (!it.on || it.on.includes(kind) || (kind === 'box' && it.on.includes('el'))) && (!it.phoneOnly || small) && (!it.when || it.when(merged))
       // Space between rows only exists in layouts.
       && !(kind === 'section' && it.key === 'gap' && !isLayout(sec)));
     if (!items.length) continue;
-    const count = items.filter((it) => values[it.key] != null && values[it.key] !== '').length;
-    const inner = el('div', { class: `st-group st-group--${g.id}` }, items.map((it) => styleControl(it, values[it.key], phone ? base[it.key] : undefined, set(it.key))));
+    const count = items.filter((it) => it.key && values[it.key] != null && values[it.key] !== '').length;
+    const inner = el('div', { class: `st-group st-group--${g.id}` }, items.map((it) => styleControl(it, values[it.key], small ? base[it.key] : undefined, set(it.key))));
+    if (g.id === 'motion' && ANIMS.includes(values.anim)) inner.append(el('button', { type: 'button', class: 'ed-btn ed-btn--sm', 'data-play': '', onclick: () => playAnimation(sec.id, path) }, ico('play'), 'Play it'));
     const open = count > 0 || state.openStyle.has(g.id) || (g.id === 'layout' && kind !== 'el');
     const det = el('details', { class: 'insp-group', open, 'data-group': g.id, ontoggle: (e) => { if (e.target.open) state.openStyle.add(g.id); else state.openStyle.delete(g.id); } },
       el('summary', {}, el('span', {}, g.label, count ? el('span', { class: 'badge' }, String(count)) : null),
         el('span', { class: 'st-sum' }, count ? el('button', { type: 'button', class: 'st-reset', title: 'Reset these settings', onclick: (e) => {
           e.preventDefault();
-          items.forEach((it) => ops.setStyle(node, it.key, '', screen));
+          items.forEach((it) => it.key && ops.setStyle(node, it.key, '', screen));
           refreshSection(sec.id); commit(); renderInspector();
         } }, 'Reset') : null, el('span', { class: 'chev' }, ico('chevron-down')))), inner);
     box.append(det);
   }
+}
+
+// Plays a piece's entrance animation on the page (the site only plays it when it scrolls into view).
+const ANIMS = theme.ANIMATIONS || [];
+function playAnimation(secId, path) {
+  setTimeout(() => {
+    const n = path ? cdoc()?.querySelector(nodeSel(secId, path)) : null;
+    if (!n?.classList.contains('anim')) return;
+    n.classList.remove('is-play');
+    void n.offsetWidth;
+    n.classList.add('is-play');
+    n.addEventListener('animationend', () => n.classList.remove('is-play'), { once: true });
+  }, 30);
 }
 
 // Pasted rich text keeps bold, italic, underline, links, lists and headings, but
@@ -1376,10 +1670,31 @@ const SITE_FIELDS = [
   { key: 'logo', label: 'Logo image', type: 'image', help: 'Optional. Wide logos look best around 36px tall.' },
   { key: 'logoIcon', label: 'Logo icon (when no image)', type: 'icon', when: (d) => !d.logo },
   { key: 'headerStyle', label: 'Header style', type: 'segmented', options: [['light', 'Light'], ['dark', 'Dark']] },
+  ...(has('header-options') ? [
+    { key: 'headerLayout', label: 'Header layout', type: 'segmented', options: [['split', 'Logo left'], ['left', 'All left'], ['center', 'Centred']], help: 'Logo left with the menu on the right, logo and menu together on the left, or the logo centred above the menu.' },
+    { key: 'headerSticky', label: 'While scrolling', type: 'segmented', options: [['always', 'Stays'], ['scroll', 'Hides'], ['none', 'Scrolls']], help: 'Stays at the top of the screen; hides while scrolling down and comes back going up; or scrolls away with the page.' },
+    { key: 'headerOverlay', label: 'See-through over the first section', type: 'toggle', help: 'Best over a dark or photo first section: the menu turns white on it, and the header turns solid once the page scrolls.' },
+    { key: 'headerPhone', label: 'Show the phone number', type: 'toggle', help: 'Uses the phone number in Settings.' },
+    { key: 'headerSocial', label: 'Show social links', type: 'toggle', help: 'Uses Settings → Social links.' },
+  ] : []),
   { key: 'headerCta', label: 'Header button', type: 'button' },
-  { key: 'tagline', label: 'Footer tagline', type: 'textarea' },
-  { key: 'footerText', label: 'Footer note', type: 'text' },
+  { key: 'tagline', label: 'Footer tagline', type: 'textarea', when: (d) => d.footerMode !== 'layout' },
+  { key: 'footerText', label: 'Footer note', type: 'text', when: (d) => d.footerMode !== 'layout' },
 ];
+
+// Switches the footer to a layout (made to look like the standard one the first time), or back.
+function useFooterLayout(on) {
+  const s = state.doc.site;
+  if (on) {
+    if (!Array.isArray(s.footerLayout?.rows)) s.footerLayout = theme.footerToLayout(s);
+    s.footerMode = 'layout';
+  } else delete s.footerMode;
+  commit();
+  renderCanvas();
+  select('__footer', { scroll: true });
+  setTimeout(() => cdoc()?.querySelector('.site-footer')?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 40);
+  toast(on ? 'The footer is now a layout: click any part of it to change it, or add rows and elements.' : 'Back to the standard footer. Your designed footer is kept if you switch again.', on ? {} : { action: 'Undo', onAction: undo });
+}
 
 function renderInspector() {
   const box = $('#inspector');
@@ -1410,17 +1725,25 @@ function renderInspector() {
         el('div', {}, 'Save draft', el('kbd', {}, 'Ctrl S')), el('div', {}, 'Jump to a page, section, post or setting', el('kbd', {}, 'Ctrl K')))));
     return;
   }
-  if (isChrome(state.sel)) {
+  const footer = state.sel === '__footer' ? footerSection() : null;
+  if (isChrome(state.sel) && !footer) {
     box.append(el('div', { class: 'p-head' }, el('h2', {}, ico('layout'), 'Header & footer')));
     const body = el('div', { class: 'p-body' }, el('p', { class: 'p-hint' }, 'These appear on every page. Navigation links come from your Pages.'));
     renderFields(body, SITE_FIELDS, state.doc.site, () => renderCanvas());
+    if (has('footer-layout') && LAYOUT) {
+      body.append(el('div', { class: 'convert-box' },
+        el('strong', {}, 'Design your own footer'),
+        el('p', {}, 'Rebuild the footer from rows, columns and elements: your logo, menu, social links, contact details, text, buttons and anything else, styled your way.'),
+        el('button', { type: 'button', class: 'ed-btn ed-btn--sm ed-btn--primary', 'data-footer-layout': '', onclick: () => useFooterLayout(true) }, ico('grid'), 'Design the footer')));
+    }
     box.append(body);
     box.scrollTop = scroll;
     return;
   }
   const sec = findSection(state.sel);
   const block = BLOCKS[sec.type];
-  box.append(el('div', { class: 'p-head' },
+  if (footer) box.append(el('div', { class: 'p-head' }, el('h2', {}, ico('layout'), 'Footer'), el('div', { class: 'insp-actions' })));
+  else box.append(el('div', { class: 'p-head' },
     el('h2', {}, ico(block.icon), block.label),
     el('div', { class: 'insp-actions' },
       el('button', { class: 'ed-icon-btn ed-icon-btn--sm', title: sec.hidden ? 'Show on live site' : 'Hide on live site', onclick: () => runTool('hide', sec.id) }, ico(sec.hidden ? 'eye' : 'eye-off')),
@@ -1435,6 +1758,15 @@ function renderInspector() {
     if (state.insTab === 'style') { styleTab(box, sec); box.scrollTop = scroll; return; }
   }
   if (isLayout(sec) && currentNode(sec)) { nodeContent(box, sec, state.node); box.scrollTop = scroll; return; }
+  if (footer) {
+    box.append(el('p', { class: 'p-hint footer-hint' }, 'The footer shows on every page. Click any part of it to change it; the logo, menu, social links and contact details come from Settings.'),
+      rowsGroup(sec),
+      el('div', { class: 'node-actions node-actions--foot' },
+        el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: () => select('__header', { scroll: true }) }, ico('sliders'), 'Header settings'),
+        el('button', { type: 'button', class: 'ed-btn ed-btn--sm', 'data-footer-standard': '', onclick: () => useFooterLayout(false) }, ico('undo'), 'Use the standard footer')));
+    box.scrollTop = scroll;
+    return;
+  }
   if (CONVERT?.can(sec)) {
     box.append(el('div', { class: 'convert-box' },
       el('strong', {}, 'Want to change more than these settings?'),
@@ -1937,7 +2269,12 @@ function renderPanel() {
 function panelHead(title, iconName, ...extra) { return el('div', { class: 'p-head' }, el('h2', {}, ico(iconName), title), ...extra); }
 
 function panelAdd(box) {
-  box.append(panelHead('Add a section', 'plus'));
+  box.append(panelHead(state.addTab === 'elements' && LAYOUT ? 'Add an element' : 'Add a section', 'plus'));
+  if (LAYOUT) {
+    box.append(el('div', { class: 'ed-seg ed-seg--full add-tabs' }, [['sections', 'Sections'], ['elements', 'Elements']].map(([t, l]) =>
+      el('button', { type: 'button', class: (state.addTab || 'sections') === t ? 'is-on' : '', 'data-add-tab': t, onclick: () => { state.addTab = t; renderPanel(); } }, l))));
+    if (state.addTab === 'elements') { panelElements(box); return; }
+  }
   const body = el('div', { class: 'p-body' });
   const after = state.sel && !isChrome(state.sel) ? findSection(state.sel) : null;
   body.append(el('div', { class: 'p-callout' }, ico('arrow-right'),
@@ -1948,8 +2285,9 @@ function panelAdd(box) {
     body.append(el('button', { type: 'button', class: 'ed-btn ed-btn--block', style: 'margin-bottom:8px', onclick: pasteSection },
       ico('clipboard2'), `Paste copied ${BLOCKS[clip.type]?.label || 'section'}`));
   }
-  if (state.doc.saved?.length) {
-    body.append(el('p', { class: 'p-sub' }, 'My saved sections'), el('div', { class: 'saved-list' }, state.doc.saved.map((sv) =>
+  const savedSecs = (state.doc.saved || []).filter((sv) => BLOCKS[sv.section?.type]);
+  if (savedSecs.length) {
+    body.append(el('p', { class: 'p-sub' }, 'My saved sections'), el('div', { class: 'saved-list' }, savedSecs.map((sv) =>
       el('div', { class: 'saved-item' },
         el('button', { type: 'button', class: 'saved-item__main', title: 'Add this section', onclick: () => insertSection(sv.section) },
           el('span', { class: 'layer__icon' }, ico(BLOCKS[sv.section.type]?.icon || 'layout')),
@@ -1964,6 +2302,56 @@ function panelAdd(box) {
   }
   body.append(...blockCards((type) => addSection(type)));
   box.append(body);
+}
+
+// Elements to drag onto the page (into any layout section), or to click: they
+// go where the selection is, or into a new layout section.
+function panelElements(box) {
+  const body = el('div', { class: 'p-body' });
+  const sec = findSection(state.sel);
+  body.append(el('p', { class: 'p-hint' }, 'Drag an element onto the page and drop it where you want it, or click it to add it ',
+    isLayout(sec) ? 'where the selection is.' : 'in a new section.'));
+  const tile = (label, iconName, hint, start, add, find) => el('button', { type: 'button', class: 'el-tile el-tile--drag', draggable: 'true', 'data-find': find.toLowerCase(), title: `${label}: drag onto the page, or click to add`,
+    ondragstart: (e) => { start(); e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', label); },
+    ondragend: () => endCanvasDrag(),
+    onclick: add }, ico(iconName), el('strong', {}, label), el('small', {}, hint));
+  const groups = [];
+  const saved = [...savedPieces('el'), ...savedPieces('row')];
+  if (saved.length) {
+    groups.push(['My saved pieces', saved.map((sv) => tile(sv.name, sv.piece.kind === 'row' ? 'layout' : LAYOUT[sv.piece.node.type]?.icon || 'bookmark', pieceName(sv.piece),
+      () => { drag = { kind: 'node', nk: sv.piece.kind, sec: null, path: null, isNew: sv.piece.node.type || 'row', piece: sv.piece }; },
+      () => addPieceAnywhere(sv.piece, `${sv.name} added`), `${sv.name} ${pieceName(sv.piece)}`))]);
+  }
+  for (const [title, list] of layoutGroups()) {
+    groups.push([title, list.map(([type, e]) => tile(e.label, e.icon, elementHint(type, e),
+      () => { drag = { kind: 'node', nk: 'el', sec: null, path: null, isNew: type }; },
+      () => addPieceAnywhere({ kind: 'el', node: LAYOUT[type].defaults() }, `${e.label} added`), `${e.label} ${elementHint(type, e)} ${type}`))]);
+  }
+  const lists = groups.map(([title, tiles]) => el('div', { class: 'el-group' }, el('p', { class: 'p-sub' }, title), el('div', { class: 'el-tiles el-tiles--panel' }, tiles)));
+  const none = el('p', { class: 'p-hint', hidden: true }, 'Nothing matches.');
+  const search = el('input', { class: 'in el-search', type: 'search', placeholder: 'Search elements…', 'aria-label': 'Search elements', oninput: () => {
+    const q = search.value.trim().toLowerCase();
+    let any = false;
+    lists.forEach((g) => { let n = 0; $$('.el-tile', g).forEach((t) => { const ok = !q || q.split(/\s+/).every((w) => t.dataset.find.includes(w)); t.hidden = !ok; n += ok; }); g.hidden = !n; any ||= n > 0; });
+    none.hidden = any;
+  } });
+  body.append(search, ...lists, none);
+  box.append(body);
+}
+
+// A piece clicked in the Elements panel: where the selection is in a layout
+// section, or in a new layout section after the selection.
+function addPieceAnywhere(piece, message) {
+  let sec = findSection(state.sel);
+  if (!isLayout(sec)) {
+    sec = newSection('layout', { rows: [] });
+    sections().splice(state.sel && !isChrome(state.sel) ? insertIndex() : sections().length, 0, sec);
+    state.sel = sec.id;
+    state.node = null;
+    renderCanvas();
+    renderPanel();
+  }
+  placePiece(piece, sec.id, state.sel === sec.id ? state.node : null, message);
 }
 
 // Section cards grouped like the Add panel; onPick(type).
@@ -2335,6 +2723,8 @@ function openAddPage() {
     else {
       secs = PAGE_TEMPLATES[tpl].sections.map((type) => newSection(type, type === 'hero'
         ? { layout: 'center', pad: 'normal', eyebrow: title, heading: title, text: 'A short introduction to this page.', secondary: { label: '', href: '' } } : {}));
+      // Like added sections, built from layout pieces unless “Add as fully editable” is off.
+      if (CONVERT && addEditable()) secs = secs.map((x) => (CONVERT.can(x) ? CONVERT.one(x) : x));
     }
     state.doc.pages.push({ id: uid('p'), title, slug: uniqueSlug(slugify(title) || 'page'), showInNav: true, seoTitle: '', seoDescription: '', sections: secs });
     commit();
@@ -2656,6 +3046,11 @@ function panelRedirects(body) {
 // newer than the last one seen get a "New" badge, and the Help button a dot.
 // feature: shown only when the connected site supports it.
 const WHATS_NEW = [
+  { v: 4, feature: 'tablet-styles', title: 'Tablet designs, and the real size on any screen', text: 'The page is now drawn at the real width of a computer, tablet or phone and zoomed to fit. Style → Tablets changes something only on tablets, and columns can have their own width there.' },
+  { v: 4, feature: 'layout-builder', title: 'Drag elements onto the page', text: 'Add → Elements lists every element: drag one onto the page and drop it where you want it, or search for it by name.', show: () => { state.addTab = 'elements'; setTab('add'); } },
+  { v: 4, feature: 'layout-builder', title: 'Copy, paste and right-click', text: 'Right-click any part of a layout for copy, paste, duplicate, copy style and paste style, or use Ctrl+C / Ctrl+V (Ctrl+Alt+C / V for a style). Paste works on other pages too, and “Save to reuse” keeps a piece for later.' },
+  { v: 4, feature: 'hover-styles', title: 'Hover effects and animations', text: 'Style → Hover changes a card or button when the mouse is over it (colour, shadow, lift). Style → Animation fades or slides a piece in as visitors scroll to it.' },
+  { v: 4, feature: 'footer-layout', title: 'Design the header and footer', text: 'Click the footer and press “Design the footer” to build it from rows and elements like a section. The header can now be centred, see-through over a dark first section, hide while scrolling, and show your phone number and social links.', show: () => select('__header', { scroll: true }) },
   { v: 3, feature: 'layout-builder', title: 'Design your own sections', text: 'Add a “Layout” section (Add → Basic) and build it from rows and columns. Drag elements between columns, drag the line between columns to resize them, and add boxes for cards.', show: () => setTab('add') },
   { v: 3, feature: 'convert-layout', title: 'Make any section fully editable', text: 'Select a premade section and press “Make fully editable” (or do a whole page from Pages). It looks the same, and every heading, button, card and image can then be moved, restyled or removed.' },
   { v: 3, feature: 'layout-widgets', title: 'Forms, FAQ and galleries anywhere', text: 'In a layout, “Add element” → More… puts a contact or quote form, FAQ, photo gallery, blog posts, booking calendar, map and more into any column.' },
@@ -2697,7 +3092,7 @@ function panelHelp(box) {
   const news = newsItems();
   if (news.length) {
     box.append(el('div', { class: 'p-body news' }, el('p', { class: 'p-sub' }, 'What’s new'),
-      ...news.slice(0, 7).map((n) => el('div', { class: `news__item${n.v > seen ? ' is-new' : ''}` },
+      ...news.slice(0, Math.max(7, news.filter((n) => n.v > seen).length)).map((n) => el('div', { class: `news__item${n.v > seen ? ' is-new' : ''}` },
         el('strong', {}, n.title, n.v > seen ? el('span', { class: 'badge badge--new' }, 'New') : null),
         el('p', {}, n.text),
         n.show ? el('button', { type: 'button', class: 'ed-btn ed-btn--sm', onclick: n.show }, 'Show me') : null))));
@@ -3333,6 +3728,13 @@ function showProblem(c) {
   }
   if (c.code === 'invalid') { setTab(/^Post/.test(c.message) ? 'blog' : /redirect/i.test(c.message) ? 'site' : 'pages'); return; }
   if (['headerCta', 'tagline', 'footerText'].includes(w.field)) { select('__header', { scroll: true }); focusField('#inspector', w.field); return; }
+  const inFooter = String(w.field || '').match(/^footerLayout\.(rows\.\d+(?:\.cols\.\d+(?:\.els\.\d+)*)?)/);
+  if (inFooter && footerSection()) {
+    const path = ops.exists(footerSection().data, inFooter[1]) ? inFooter[1] : null;
+    selectNode('__footer', path, { scroll: true });
+    if (!path) setTimeout(() => cdoc()?.querySelector('.site-footer')?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 40);
+    return;
+  }
   if (w.field === 'theme') { setTab('theme'); return; }
   setTab('site');
   if (w.field === 'redirects') { setTimeout(() => $('#panel .redirect-add')?.scrollIntoView({ block: 'center' }), 40); return; }
@@ -3578,6 +3980,31 @@ function setDevice(d) {
   // The canvas can be narrower than a computer screen, so phones-only things follow the chosen size.
   if (cdoc()?.body) cdoc().body.dataset.device = d;
   $$('#device-toggle button').forEach((b) => b.classList.toggle('is-on', b.dataset.device === d));
+  fitCanvas();
+}
+
+// The page is drawn at the real width of the chosen screen (so computer, tablet
+// and phone layouts show as visitors see them) and zoomed out when the space
+// for it is narrower, like design tools do.
+const DEVICE_WIDTH = { desktop: 1080, tablet: 820, mobile: 390 };
+function fitCanvas() {
+  const wrap = $('#frame-wrap');
+  const stage = wrap?.parentElement;
+  if (!stage) return;
+  const cs = getComputedStyle(stage);
+  const avail = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  if (avail <= 0) return;
+  const want = DEVICE_WIDTH[state.device] || DEVICE_WIDTH.desktop;
+  const width = state.device === 'desktop' ? Math.max(avail, want) : want;
+  const k = Math.min(1, avail / width);
+  wrap.style.width = state.device === 'desktop' ? '' : `${Math.floor(width * k)}px`;
+  frame.style.width = `${width}px`;
+  frame.style.height = `${100 / k}%`;
+  frame.style.transform = k < 1 ? `scale(${k})` : '';
+  // The editor's own toolbars on the page keep their size.
+  cdoc()?.documentElement.style.setProperty('--ed-unzoom', String(Math.min(1.6, 1 / k)));
+  const zoom = $('#zoom');
+  if (zoom) { zoom.hidden = k >= 0.995; zoom.textContent = `${Math.round(k * 100)}%`; zoom.title = `Shown at ${Math.round(k * 100)}% to fit: the page is ${width}px wide here, like on a ${state.device === 'mobile' ? 'phone' : state.device === 'tablet' ? 'tablet' : 'computer'}`; }
 }
 
 function refreshAll() {
@@ -3601,6 +4028,11 @@ function onGlobalKey(e) {
   else if (state.node && state.sel && $('#modal').hidden && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); nodeTool('node-delete'); }
   else if (state.node && state.sel && $('#modal').hidden && mod && e.key.toLowerCase() === 'd') { e.preventDefault(); nodeTool('node-copy'); }
   else if (state.node && state.sel && e.key === 'Escape' && $('#modal').hidden) selectNode(state.sel, ops.parentOf(state.node));
+  // Copy and paste a piece's style (Ctrl+Alt+C / V), and copy and paste pieces of layouts.
+  else if (mod && e.altKey && e.code === 'KeyC' && state.sel && (state.node || !isChrome(state.sel)) && STYLE_GROUPS) { e.preventDefault(); copyStyle(); }
+  else if (mod && e.altKey && e.code === 'KeyV' && state.sel && (state.node || !isChrome(state.sel)) && styleClip()) { e.preventDefault(); pasteStyle(); }
+  else if (state.node && state.sel && $('#modal').hidden && mod && e.key.toLowerCase() === 'c' && !String(e.target.ownerDocument?.getSelection?.() || '')) { e.preventDefault(); copyPiece(); }
+  else if (mod && e.key.toLowerCase() === 'v' && $('#modal').hidden && usablePiece(pieceClip()) && isLayout(findSection(state.sel))) { e.preventDefault(); pastePiece(); }
   // With an element selected, Delete, Ctrl+D and Escape act on the element.
   else if (state.el != null && state.sel && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); elementTool('el-delete', state.sel, state.el); }
   else if (state.el != null && state.sel && mod && e.key.toLowerCase() === 'd') { e.preventDefault(); elementTool('el-copy', state.sel, state.el); }
@@ -3611,6 +4043,8 @@ function onGlobalKey(e) {
   else if ((e.key === 'Delete' || e.key === 'Backspace') && state.sel && !isChrome(state.sel)) { e.preventDefault(); runTool('delete', state.sel); }
   else if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else select(null); }
 }
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest?.('#ctx-menu')) closeContextMenu(); });
+addEventListener('resize', closeContextMenu);
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -3679,6 +4113,8 @@ async function boot() {
 
   $$('.ed-rail button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
   $$('#device-toggle button').forEach((b) => b.addEventListener('click', () => setDevice(b.dataset.device)));
+  new ResizeObserver(() => fitCanvas()).observe($('#frame-wrap').parentElement);
+  fitCanvas();
   $('#undo').addEventListener('click', undo);
   $('#redo').addEventListener('click', redo);
   $('#page-select').addEventListener('change', (e) => goToPage(+e.target.value));

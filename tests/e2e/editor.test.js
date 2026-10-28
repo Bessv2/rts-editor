@@ -100,9 +100,12 @@ async function publish(p) {
 
 // news: show the one-time "What's new" note (only its own test wants it; elsewhere it
 // would sit over the bottom of the page while a test clicks or drags there).
-async function newPage(ctx, { news = false } = {}) {
+// editable: keep "Add as fully editable" at its default (on). Most tests were written
+// for premade sections as they are, so they turn it off.
+async function newPage(ctx, { news = false, editable = false } = {}) {
   const p = await ctx.newPage();
   if (!news) await p.addInitScript(() => { try { localStorage.setItem('whats-new-seen', '999'); } catch { /* storage blocked */ } });
+  if (!editable) await p.addInitScript(() => { try { if (localStorage.getItem('add-editable') == null) localStorage.setItem('add-editable', '0'); } catch { /* storage blocked */ } });
   p.errors = [];
   p.on('pageerror', (e) => p.errors.push(e.message));
   p.on('console', (m) => m.type() === 'error' && !isNoise(m.text()) && p.errors.push(m.text()));
@@ -980,7 +983,8 @@ test('what’s new: a note on first visit, the list in Help, then quiet', async 
   await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
   // The note names the newest feature this site supports.
   const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
-  const newest = theme.FEATURES?.includes('layout-builder') ? 'design your own sections' : 'jump to anything';
+  const newest = theme.FEATURES?.includes('tablet-styles') ? 'tablet designs, and the real size on any screen'
+    : theme.FEATURES?.includes('layout-builder') ? 'design your own sections' : 'jump to anything';
   const note = p.locator('.toast', { hasText: `New in the editor: ${newest}` });
   await note.waitFor();
   assert.ok(await p.locator('.ed-rail [data-tab="help"] .ed-rail__dot').isVisible());
@@ -1430,6 +1434,249 @@ test('make premade sections fully editable: one section, a whole page, or as the
   doc = await savedDraft(p);
   assert.equal(doc.pages[0].sections.at(-1).type, 'layout');
   assert.match(JSON.stringify(doc.pages[0].sections.at(-1).data.rows), /"style":"light"/, 'the call to action’s white button came along');
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('screens at their real size, tablet styles, hover and animation', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('tablet-styles')) { t.skip('the site has no tablet styles yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  const pageWidth = () => canvas.locator('body').evaluate((b) => b.ownerDocument.defaultView.innerWidth);
+
+  // A laptop screen leaves less room than a computer page needs: it is zoomed out, not squeezed
+  assert.equal(await pageWidth(), 1080);
+  assert.match(await p.locator('#zoom').innerText(), /^\d+%$/);
+  await p.click('#device-toggle [data-device="tablet"]');
+  assert.equal(await pageWidth(), 820);
+  await p.click('#device-toggle [data-device="mobile"]');
+  assert.equal(await pageWidth(), 390);
+  await p.click('#device-toggle [data-device="desktop"]');
+
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .block-card', { hasText: 'Layout' }).first().click();
+  const sec = canvas.locator('.blk-layout').first();
+  await sec.locator('[data-node="rows.0"]').waitFor();
+
+  // A tablet width for the first column, and a tablet-only text size for the heading
+  await sec.locator('.lx--heading').click();
+  await p.keyboard.press('Escape');
+  await p.locator('#inspector .crumbs button', { hasText: 'Column 1' }).click();
+  await p.locator('#inspector [data-tablet-span] button', { hasText: 'Full' }).click();
+  await sec.locator('.lay__col--t12').waitFor();
+  await sec.locator('.lx--heading').click();
+  await p.keyboard.press('Escape');
+  await p.click('#inspector [data-ins-tab="style"]');
+  await p.click('#inspector [data-screen="tablet"]');
+  assert.equal(await pageWidth(), 820, 'the preview follows');
+  assert.equal(await p.locator('#inspector details[data-group="hover"]').count(), 0, 'hover is the same on every screen');
+  await openStyleGroup(p, 'text');
+  await p.locator('#inspector [data-style="fs"] input').fill('30');
+  await p.waitForTimeout(700);
+  let d = await layoutData(p);
+  assert.equal(d.rows[0].cols[0].tablet.span, 12);
+  assert.equal(d.rows[0].cols[0].els[0].tablet.fs, 30);
+  assert.equal(await sec.locator('.lx--heading').evaluate((n) => getComputedStyle(n).fontSize), '30px');
+
+  // Hover and an entrance animation (with a preview) for every screen
+  await p.click('#inspector [data-screen="desktop"]');
+  await openStyleGroup(p, 'hover');
+  await p.locator('#inspector [data-style="hlift"] input').fill('6');
+  await openStyleGroup(p, 'motion');
+  await p.locator('#inspector [data-style="anim"] select').selectOption('up');
+  await sec.locator('.lx--heading.anim--up').waitFor();
+  await p.locator('#inspector [data-play]').click();
+  await sec.locator('.lx--heading.is-play').waitFor();
+  d = await layoutData(p);
+  assert.equal(d.rows[0].cols[0].els[0].design.hlift, 6);
+  assert.equal(d.rows[0].cols[0].els[0].design.anim, 'up');
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('copy and paste pieces and styles, the right-click menu, and dragging elements in', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('site-elements')) { t.skip('the site does not have these yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  p.on('dialog', (dlg) => dlg.accept('Promo card'));
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .block-card', { hasText: 'Layout' }).first().click();
+  const sec = canvas.locator('.blk-layout').first();
+  await sec.locator('[data-node="rows.0"]').waitFor();
+  const rightClick = async (loc) => {
+    await loc.scrollIntoViewIfNeeded();
+    await p.waitForTimeout(150);
+    const b = await loc.boundingBox();
+    await p.mouse.click(b.x + 8, b.y + 8, { button: 'right' });
+    await p.locator('#ctx-menu').waitFor();
+  };
+  await p.waitForTimeout(700); // the new section scrolls into view
+  const menuItem = (text) => p.locator('#ctx-menu button', { hasText: text });
+
+  // Right-click the button: copy it, then paste it into the image's column
+  await rightClick(sec.locator('.lx--button'));
+  assert.equal(await p.locator('#inspector .crumbs .is-on').innerText(), 'Button', 'right-click selects');
+  await menuItem('Copy').first().click();
+  await rightClick(sec.locator('.lx--image'));
+  await menuItem('Paste button').click();
+  await sec.locator('[data-node="rows.0.cols.1.els.1"].lx--button').waitFor();
+  assert.equal(await p.locator('#inspector .crumbs .is-on').innerText(), 'Button');
+
+  // Copy a style with the keyboard and paste it onto the heading
+  await openStyleTab(p);
+  await openStyleGroup(p, 'background');
+  await p.locator('#inspector [data-style="bg"] .st__sw[title="Dark"]').click();
+  await p.keyboard.press('Control+Alt+c');
+  await p.locator('.toast', { hasText: 'Style copied' }).waitFor();
+  await sec.locator('.lx--heading').click({ position: { x: 3, y: 3 } });
+  await p.keyboard.press('Escape');
+  await p.keyboard.press('Control+Alt+v');
+  await p.locator('.toast', { hasText: 'Style pasted' }).waitFor();
+  let d = await layoutData(p);
+  assert.equal(d.rows[0].cols[0].els[0].design.bg, 'dark');
+
+  // Ctrl+C / Ctrl+V a whole row; the paste lands after the selected row
+  await p.locator('#inspector .crumbs button', { hasText: 'Row 1' }).click();
+  await p.keyboard.press('Control+c');
+  await p.keyboard.press('Control+v');
+  await sec.locator('[data-node="rows.1"]').waitFor();
+  d = await layoutData(p);
+  assert.equal(d.rows.length, 2);
+  assert.equal(JSON.stringify(d.rows[1]), JSON.stringify(d.rows[0]));
+
+  // Save a piece and add it again from the element picker (with search)
+  await rightClick(sec.locator('[data-node="rows.1.cols.1.els.0"]'));
+  await menuItem('Save to reuse').click();
+  await sec.locator('[data-node="rows.1.cols.0.els.0"]').click();
+  await p.keyboard.press('Escape');
+  await p.locator('#inspector .crumbs button', { hasText: 'Column 1' }).click();
+  await p.click('#inspector [data-ins-tab="content"]');
+  await p.locator('#inspector .el-add__more').click();
+  await p.fill('.el-search', 'promo');
+  assert.deepEqual(await p.locator('.el-picker .el-tile:visible strong').allInnerTexts(), ['Promo card']);
+  await p.fill('.el-search', 'calend');
+  assert.ok((await p.locator('.el-picker .el-tile:visible').count()) >= 1);
+  await p.fill('.el-search', 'promo');
+  await p.keyboard.press('Enter');
+  await sec.locator('[data-node="rows.1.cols.0.els.3"].lx--image').waitFor();
+
+  // Drag an element from Add → Elements onto the page
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.click('#panel [data-add-tab="elements"]');
+  await p.locator('#panel .el-tile', { hasText: 'Social links' }).dragTo(sec.locator('[data-node="rows.0.cols.0.els.0"]'), { targetPosition: { x: 30, y: 3 } });
+  await sec.locator('[data-node="rows.0.cols.0.els.0"].lx--social').waitFor();
+  d = await layoutData(p);
+  assert.equal(d.rows[0].cols[0].els[0].type, 'social');
+  // Clicking an element adds it where the selection is
+  await p.locator('#panel .el-tile', { hasText: 'Copyright line' }).click();
+  await sec.locator('[data-node="rows.0.cols.0.els.1"].lx--copyright').waitFor();
+  await p.keyboard.press('Control+z');
+  await sec.locator('[data-node="rows.0.cols.0.els.1"].lx--heading').waitFor();
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+async function openStyleTab(p) { await p.click('#inspector [data-ins-tab="style"]'); }
+const clearToasts = (p) => p.evaluate(() => document.querySelectorAll('.toast').forEach((n) => n.remove()));
+
+test('header options and a footer designed like a section', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('footer-layout')) { t.skip('the site cannot design its footer yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  const gh = await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+
+  // Header: centred, see-through over the dark hero, with the phone number
+  await canvas.locator('.site-header .brand').click();
+  await p.locator('#inspector .f', { hasText: 'Header layout' }).locator('button', { hasText: 'Centred' }).click();
+  await p.locator('#inspector label.switch', { hasText: 'See-through' }).locator('input').check();
+  await p.fill('#inspector [data-path="name"]', 'Roe Technology Services');
+  await canvas.locator('header.site-header--center.site-header--overlay.site-header--on-dark').waitFor();
+
+  // Footer: rebuilt as a layout that keeps its words, then changed like any layout
+  await canvas.locator('.site-footer').click({ position: { x: 300, y: 10 } });
+  await p.click('#inspector [data-footer-layout]');
+  const footer = canvas.locator('.site-footer--custom');
+  await footer.locator('.lx--menu').waitFor();
+  assert.match(await footer.innerText(), /Reliable IT, done right\./);
+  await clearToasts(p);
+  await footer.locator('.lx--menu').click();
+  assert.equal(await p.locator('#inspector .crumbs').innerText(), 'Footer\n›\nRow 1\n›\nColumn 2\n›\nMenu');
+  await p.locator('#inspector .f', { hasText: 'Direction' }).locator('button', { hasText: 'Side by side' }).click();
+  await footer.locator('.lx-menu--row').waitFor();
+  // Text typed in the footer is saved with the site settings (notes at the bottom of the window could be in the way)
+  await clearToasts(p);
+  await footer.locator('.lx--text .lx-rich').first().click();
+  await p.keyboard.press('Control+End');
+  await p.keyboard.type(' Locally owned.');
+  await p.keyboard.press('Escape');
+  await clearToasts(p);
+  await footer.locator('.lx--copyright').click();
+  await p.fill('#inspector [data-path$=".note"]', 'Since 2019');
+  await p.waitForTimeout(700);
+  const doc = await savedDraft(p);
+  assert.equal(doc.site.footerMode, 'layout');
+  assert.equal(doc.site.headerLayout, 'center');
+  assert.equal(doc.site.headerOverlay, true);
+  const els = doc.site.footerLayout.rows.flatMap((r) => r.cols.flatMap((c) => c.els));
+  assert.equal(els.find((e) => e.type === 'menu').dir, 'row');
+  assert.equal(els.find((e) => e.type === 'copyright').note, 'Since 2019');
+  assert.match(els.find((e) => e.type === 'text').html, /Locally owned\.<\/p>$/);
+
+  // Published pages get the designed footer; switching back keeps it for later
+  await publish(p);
+  assert.match(gh.read('index.html'), /<footer class="site-footer site-footer--custom x-__footer is-dark">[\s\S]*Locally owned/);
+  if (await p.locator('#modal').isVisible()) await p.click('#modal header [data-close]');
+  await clearToasts(p);
+  await footer.click({ position: { x: 5, y: 5 } });
+  await p.click('#inspector [data-footer-standard]');
+  await canvas.locator('footer.site-footer:not(.site-footer--custom)').waitFor();
+  assert.equal((await savedDraft(p)).site.footerLayout.rows.length, 3);
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('new sections and pages from templates arrive fully editable unless that is turned off', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('convert-layout')) { t.skip('the site cannot convert sections yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx, { editable: true });
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  assert.ok(await p.locator('#panel .add-editable input').isChecked(), 'on by default');
+  await p.locator('#panel .block-card', { hasText: 'Call to action' }).first().click();
+  let doc = await savedDraft(p);
+  assert.equal(doc.pages[0].sections.at(-1).type, 'layout');
+  // A page from a template
+  await p.click('.ed-rail button[data-tab="pages"]');
+  await p.click('#panel .p-head button:has-text("New")');
+  await p.locator('#modal .tpl', { hasText: 'Services' }).first().locator('.tpl__main').click();
+  await p.click('#modal button:has-text("Create page")');
+  await p.locator('.toast', { hasText: 'created' }).waitFor();
+  doc = await savedDraft(p);
+  assert.deepEqual([...new Set(doc.pages.at(-1).sections.map((s) => s.type))], ['layout']);
+  // Off: premade sections as they are
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .add-editable input').uncheck();
+  await p.locator('#panel .block-card', { hasText: 'Call to action' }).first().click();
+  doc = await savedDraft(p);
+  assert.equal(doc.pages.at(-1).sections.at(-1).type, 'cta');
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });
