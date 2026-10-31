@@ -1630,14 +1630,19 @@ function styleTab(box, sec) {
 
 // Plays a piece's entrance animation on the page (the site only plays it when it scrolls into view).
 const ANIMS = theme.ANIMATIONS || [];
+// A piece that brings in what is inside it "one after another" plays theirs.
 function playAnimation(secId, path) {
   setTimeout(() => {
     const n = path ? cdoc()?.querySelector(nodeSel(secId, path)) : null;
-    if (!n?.classList.contains('anim')) return;
-    n.classList.remove('is-play');
-    void n.offsetWidth;
-    n.classList.add('is-play');
-    n.addEventListener('animationend', () => n.classList.remove('is-play'), { once: true });
+    if (!n) return;
+    for (const x of n.classList.contains('anim') ? [n] : [...n.querySelectorAll(':scope > .anim')]) {
+      x.classList.remove('is-play');
+      void x.offsetWidth;
+      x.classList.add('is-play');
+      // The piece may also loop or follow the scroll: only its entrance ends.
+      const done = (e) => { if (e.target === x && e.animationName.startsWith('anim-')) { x.classList.remove('is-play'); x.removeEventListener('animationend', done); } };
+      x.addEventListener('animationend', done);
+    }
   }, 30);
 }
 
@@ -1676,6 +1681,10 @@ const SITE_FIELDS = [
     { key: 'headerOverlay', label: 'See-through over the first section', type: 'toggle', help: 'Best over a dark or photo first section: the menu turns white on it, and the header turns solid once the page scrolls.' },
     { key: 'headerPhone', label: 'Show the phone number', type: 'toggle', help: 'Uses the phone number in Settings.' },
     { key: 'headerSocial', label: 'Show social links', type: 'toggle', help: 'Uses Settings → Social links.' },
+  ] : []),
+  ...(has('scroll-effects') ? [
+    { key: 'scrollProgress', label: 'Reading progress bar', type: 'toggle', help: 'A thin bar across the top of every page that fills up as visitors scroll down.' },
+    { key: 'backToTop', label: 'Back-to-top button', type: 'toggle', help: 'A round button in the corner that appears once visitors have scrolled down.' },
   ] : []),
   { key: 'headerCta', label: 'Header button', type: 'button' },
   { key: 'tagline', label: 'Footer tagline', type: 'textarea', when: (d) => d.footerMode !== 'layout' },
@@ -3046,6 +3055,7 @@ function panelRedirects(body) {
 // newer than the last one seen get a "New" badge, and the Help button a dot.
 // feature: shown only when the connected site supports it.
 const WHATS_NEW = [
+  { v: 5, feature: 'scroll-effects', title: 'Scroll effects and moving elements', text: 'Style → Animation now has effects that follow the scroll (parallax, fade, grow, slide), gentle loops (float, pulse, spin), “one after another” entrances and sticky columns. Add → Elements has a Counter, a Ticker and Rotating words. Header & footer settings add a reading progress bar and a back-to-top button.' },
   { v: 4, feature: 'tablet-styles', title: 'Tablet designs, and the real size on any screen', text: 'The page is now drawn at the real width of a computer, tablet or phone and zoomed to fit. Style → Tablets changes something only on tablets, and columns can have their own width there.' },
   { v: 4, feature: 'layout-builder', title: 'Drag elements onto the page', text: 'Add → Elements lists every element: drag one onto the page and drop it where you want it, or search for it by name.', show: () => { state.addTab = 'elements'; setTab('add'); } },
   { v: 4, feature: 'layout-builder', title: 'Copy, paste and right-click', text: 'Right-click any part of a layout for copy, paste, duplicate, copy style and paste style, or use Ctrl+C / Ctrl+V (Ctrl+Alt+C / V for a style). Paste works on other pages too, and “Save to reuse” keeps a piece for later.' },
