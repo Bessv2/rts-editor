@@ -983,7 +983,8 @@ test('what’s new: a note on first visit, the list in Help, then quiet', async 
   await p.frameLocator('#canvas').locator('.hero__title').first().waitFor();
   // The note names the newest feature this site supports.
   const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
-  const newest = theme.FEATURES?.includes('tablet-styles') ? 'tablet designs, and the real size on any screen'
+  const newest = theme.FEATURES?.includes('scroll-effects') ? 'scroll effects and moving elements'
+    : theme.FEATURES?.includes('tablet-styles') ? 'tablet designs, and the real size on any screen'
     : theme.FEATURES?.includes('layout-builder') ? 'design your own sections' : 'jump to anything';
   const note = p.locator('.toast', { hasText: `New in the editor: ${newest}` });
   await note.waitFor();
@@ -1677,6 +1678,77 @@ test('new sections and pages from templates arrive fully editable unless that is
   await p.locator('#panel .block-card', { hasText: 'Call to action' }).first().click();
   doc = await savedDraft(p);
   assert.equal(doc.pages.at(-1).sections.at(-1).type, 'cta');
+  assert.deepEqual(p.errors, []);
+  await ctx.close();
+});
+
+test('motion: scroll effects, loops, one after another, sticky, and the moving elements', async (t) => {
+  const theme = await import(pathToFileURL(join(SITE_DIR, 'assets/js/theme-api.js')).href);
+  if (!theme.FEATURES?.includes('scroll-effects')) { t.skip('the site has no scroll effects yet'); return; }
+  const ctx = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  await mockGitHub(ctx);
+  const p = await newPage(ctx);
+  await p.goto(`${editorUrl}/`, { waitUntil: 'load' });
+  const canvas = p.frameLocator('#canvas');
+  await canvas.locator('.hero__title').first().waitFor();
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.locator('#panel .block-card', { hasText: 'Layout' }).first().click();
+  const sec = canvas.locator('.blk-layout').first();
+  await sec.locator('[data-node="rows.0"]').waitFor();
+  await p.waitForTimeout(600);
+  await clearToasts(p);
+
+  // The image follows the scroll and the heading floats
+  await sec.locator('.lx--image').click({ position: { x: 10, y: 10 } });
+  await openStyleTab(p);
+  await openStyleGroup(p, 'motion');
+  await p.locator('#inspector [data-style="scroll"] select').selectOption('parallax');
+  await p.locator('#inspector [data-style="scrollAmt"] button', { hasText: 'Strong' }).click();
+  await sec.locator('.lx--image.sfx.sfx--parallax').waitFor();
+  await p.locator('#inspector [data-style="sticky"] input').check();
+  await sec.locator('.lx--image.is-sticky').waitFor();
+  await sec.locator('.lx--heading').click();
+  await p.keyboard.press('Escape');
+  await p.locator('#inspector [data-style="loop"] select').selectOption('float');
+  await sec.locator('.lx--heading.loop--float').waitFor();
+  assert.ok(await sec.locator('.lx--heading').evaluate((n) => getComputedStyle(n).animationPlayState.includes('paused')), 'holds still while selected');
+
+  // The row's columns come in one after another; Play it shows them
+  await p.locator('#inspector .crumbs button', { hasText: 'Row 1' }).click();
+  await p.locator('#inspector [data-style="anim"] select').selectOption('up');
+  await p.locator('#inspector [data-style="stagger"] input').check();
+  await sec.locator('[data-node="rows.0.cols.1"].anim--up').waitFor();
+  await p.locator('#inspector [data-play]').click();
+  await sec.locator('[data-node="rows.0.cols.0"].is-play').waitFor();
+  let d = await layoutData(p);
+  assert.equal(d.rows[0].design.stagger, true);
+  assert.equal(d.rows[0].cols[1].els[0].design.scroll, 'parallax');
+  assert.equal(d.rows[0].cols[1].els[0].design.scrollAmt, '3');
+  assert.equal(d.rows[0].cols[0].els[0].design.loop, 'float');
+
+  // Counter, ticker and rotating words from Add → Elements
+  await p.click('.ed-rail button[data-tab="add"]');
+  await p.click('#panel [data-add-tab="elements"]');
+  await sec.locator('.lx--text').click();
+  await p.keyboard.press('Escape');
+  for (const name of ['Counter', 'Ticker', 'Rotating words']) await p.locator('#panel .el-tile', { hasText: name }).first().click();
+  await sec.locator('.lx--counter [data-count="250"]').waitFor();
+  await sec.locator('.lx--ticker .lx-ticker__item', { hasText: 'Friendly service' }).first().waitFor();
+  await sec.locator('.lx--rotator .lx-rot__word.is-on', { hasText: 'websites' }).waitFor();
+  await p.click('#inspector [data-ins-tab="content"]');
+  await p.fill('#inspector [data-path$=".words"]', 'gardens, patios, fences');
+  await sec.locator('.lx--rotator .lx-rot__word.is-on', { hasText: 'gardens' }).waitFor();
+  d = await layoutData(p);
+  assert.deepEqual(d.rows[0].cols[0].els.map((e) => e.type), ['heading', 'text', 'counter', 'ticker', 'rotator', 'button']);
+
+  // Reading progress bar and back-to-top button for the whole site
+  await canvas.locator('.site-header .brand').click();
+  await p.locator('#inspector label.switch', { hasText: 'Reading progress bar' }).locator('input').check();
+  await p.locator('#inspector label.switch', { hasText: 'Back-to-top button' }).locator('input').check();
+  await canvas.locator('.scroll-progress').waitFor({ state: 'attached' });
+  const doc = await savedDraft(p);
+  assert.equal(doc.site.scrollProgress, true);
+  assert.equal(doc.site.backToTop, true);
   assert.deepEqual(p.errors, []);
   await ctx.close();
 });

@@ -280,9 +280,10 @@ kbd { white-space: nowrap; font: 600 11px ui-monospace, monospace; padding: 2px 
 .steps-mini a { color: var(--e-accent); }
 
 /* Toasts */
-.ed-toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 200; display: grid; gap: 8px; justify-items: center; }
+.ed-toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 200; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+/* Notes never get in the way of clicking the page under them; only their buttons take clicks. */
 .toast { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px; background: #111827; color: #f9fafb; font-size: 13px; box-shadow: 0 12px 30px -10px rgba(0, 0, 0, .45); animation: pop .2s cubic-bezier(.2, .8, .2, 1); }
-.toast button { border: 0; background: none; color: #93c5fd; font-weight: 700; padding: 0; }
+.toast button { border: 0; background: none; color: #93c5fd; font-weight: 700; padding: 0; pointer-events: auto; cursor: pointer; }
 .toast.is-err { background: #7f1d1d; }
 @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 @keyframes fade { from { opacity: 0; } }

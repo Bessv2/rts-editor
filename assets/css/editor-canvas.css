@@ -154,3 +154,5 @@ html { scroll-behavior: auto; }
 /* A see-through header over the first section: while editing it scrolls with the page,
    so it never sits over the sections below (on the site it turns solid once scrolled). */
 .edit-mode .site-header--overlay { position: relative; }
+/* While a moving piece is selected it holds still, so it is easy to work on. */
+.edit-mode .is-node-sel.loop, .edit-mode .is-node-sel .lx-ticker__track { animation-play-state: paused; }
